@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -13,6 +13,11 @@ function sandbox() {
 }
 
 describe("profiles", () => {
+  // The overlay mirrors $XDG_CONFIG_HOME when it's set (CI runners set it); these tests use the sandbox's ~/.config.
+  const xdg = process.env.XDG_CONFIG_HOME;
+  beforeAll(() => void delete process.env.XDG_CONFIG_HOME);
+  afterAll(() => void (xdg === undefined ? delete process.env.XDG_CONFIG_HOME : (process.env.XDG_CONFIG_HOME = xdg)));
+
   test("remotes normalize across URL forms", () => {
     for (const u of ["git@github.com:Acme/App.git", "https://github.com/acme/app", "ssh://git@github.com/acme/app.git", "https://github.com/acme/app.git/"])
       expect(normalizeRemote(u)).toBe("github.com/acme/app");

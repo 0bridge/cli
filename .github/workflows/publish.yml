@@ -1,0 +1,27 @@
+# Publishes apps/cli to npm when a v* tag is pushed, with provenance. Uses npm trusted
+# publishing (OIDC): no token is stored here. On npmjs.com → the 0bridge package → Settings →
+# Trusted publishing, add GitHub Actions: organization 0bridge, repository cli, workflow publish.yml.
+name: Publish
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: bun install --frozen-lockfile
+      - run: bun test
+      - name: The tag matches the package version
+        run: test "v$(node -p "require('./apps/cli/package.json').version")" = "$GITHUB_REF_NAME"
+      - run: npm publish --provenance --access public
+        working-directory: apps/cli

@@ -1,0 +1,253 @@
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { hostname, tmpdir } from "node:os";
+import { basename, extname, join } from "node:path";
+import { deviceTokenKey, openSecretStore, type CloudClient, type Context } from "@0bridge/core";
+import { installAgent } from "./background.ts";
+import { cloudClient } from "./cloud.ts";
+import { c } from "./ui.ts";
+
+/**
+ * The clipboard relay (D39): send a screenshot, file or text from this computer to 0bridge, where
+ * an agent anywhere (over SSH, on a server, in claude.ai) reads it once with `bridge__clipboard`.
+ * Nothing is sent unless the user runs this; items wait 10 minutes.
+ */
+
+function fail(msg: string): never {
+  console.error(c.red(`error: ${msg}`));
+  process.exit(1);
+}
+
+const MIME: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".heic": "image/heic",
+  ".tif": "image/tiff",
+  ".tiff": "image/tiff",
+  ".pdf": "application/pdf",
+  ".txt": "text/plain",
+  ".md": "text/markdown",
+  ".json": "application/json",
+  ".csv": "text/csv",
+  ".log": "text/plain",
+  ".html": "text/html",
+  ".yaml": "application/yaml",
+  ".yml": "application/yaml",
+  ".ts": "text/typescript",
+  ".js": "text/javascript",
+  ".py": "text/x-python",
+  ".sh": "text/x-shellscript",
+};
+const mimeOf = (file: string) => MIME[extname(file).toLowerCase()] ?? "application/octet-stream";
+
+/** Images agents read best: at most 1568 px on the long side, and under ~4 MB (Claude's limits). Needs macOS sips. */
+function fitImage(file: string, dir: string): string {
+  if (process.platform !== "darwin") return file;
+  const dims = spawnSync("sips", ["-g", "pixelWidth", "-g", "pixelHeight", file], { encoding: "utf8" }).stdout;
+  const w = Number(/pixelWidth: (\d+)/.exec(dims)?.[1] ?? 0);
+  const h = Number(/pixelHeight: (\d+)/.exec(dims)?.[1] ?? 0);
+  const heic = /\.(heic|tiff?)$/i.test(file);
+  let out = file;
+  if (Math.max(w, h) > 1568 || heic) {
+    out = join(dir, `${basename(file, extname(file))}.png`);
+    spawnSync("sips", ["-Z", "1568", "-s", "format", "png", file, "--out", out], { stdio: "ignore" });
+  }
+  if (statSync(out).size > 4 * 1024 * 1024) {
+    const jpg = join(dir, `${basename(file, extname(file))}.jpg`);
+    spawnSync("sips", ["-s", "format", "jpeg", "-s", "formatOptions", "85", out, "--out", jpg], { stdio: "ignore" });
+    if (existsSync(jpg)) out = jpg;
+  }
+  return out;
+}
+
+/** What's on the Mac clipboard: copied files (Finder), else an image (a screenshot), else text. */
+function readMacClipboard(dir: string): { files: string[] } | { text: string } | null {
+  const script = `
+ObjC.import('AppKit');
+// Tests use a pasteboard of their own, never the user's.
+const pb = ${JSON.stringify(process.env.ZEROBRIDGE_PASTEBOARD ?? "")} ? $.NSPasteboard.pasteboardWithName(${JSON.stringify(process.env.ZEROBRIDGE_PASTEBOARD ?? "")}) : $.NSPasteboard.generalPasteboard;
+const urls = pb.readObjectsForClassesOptions($([$.NSURL]), $({ NSPasteboardURLReadingFileURLsOnlyKey: true }));
+const files = [];
+if (urls && urls.count > 0) for (let i = 0; i < urls.count; i++) files.push(urls.objectAtIndex(i).path.js);
+let image = null;
+if (!files.length) {
+  for (const [type, ext] of [['public.png', 'png'], ['public.tiff', 'tiff'], ['public.jpeg', 'jpg']]) {
+    const d = pb.dataForType(type);
+    if (!d.isNil()) { image = ${JSON.stringify(dir)} + '/clipboard.' + ext; d.writeToFileAtomically(image, true); break; }
+  }
+}
+const text = files.length || image ? null : pb.stringForType('public.utf8-plain-text');
+JSON.stringify({ files, image, text: text && !text.isNil() ? text.js : null });`;
+  const r = spawnSync("osascript", ["-l", "JavaScript", "-e", script], { encoding: "utf8" });
+  if (r.status !== 0) return null;
+  const got = JSON.parse(r.stdout.trim() || "{}") as { files?: string[]; image?: string | null; text?: string | null };
+  if (got.files?.length) return { files: got.files };
+  if (got.image) return { files: [got.image] };
+  return got.text ? { text: got.text } : null;
+}
+
+/** Linux (X11 or Wayland): an image if there is one, else text. */
+function readLinuxClipboard(dir: string): { files: string[] } | { text: string } | null {
+  const img = join(dir, "clipboard.png");
+  for (const cmd of [["wl-paste", "--type", "image/png"], ["xclip", "-selection", "clipboard", "-t", "image/png", "-o"]]) {
+    const r = spawnSync(cmd[0]!, cmd.slice(1));
+    if (r.status === 0 && r.stdout?.length) {
+      writeFileSync(img, r.stdout);
+      return { files: [img] };
+    }
+  }
+  for (const cmd of [["wl-paste", "--no-newline"], ["xclip", "-selection", "clipboard", "-o"]]) {
+    const r = spawnSync(cmd[0]!, cmd.slice(1), { encoding: "utf8" });
+    if (r.status === 0 && r.stdout) return { text: r.stdout };
+  }
+  return null;
+}
+
+const kb = (n: number) => (n > 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+
+export async function clipCommand(ctx: Context, args: string[]): Promise<void> {
+  const { client } = cloudClient(ctx);
+  const [sub] = args;
+  if (sub === "status" || sub === "list") {
+    const waiting = await client.clipsWaiting();
+    if (!waiting.length) return console.log(c.dim("Nothing waiting."));
+    for (const w of waiting) console.log(`${w.name}  ${c.dim(`${w.mime} · ${kb(w.size)} · ${Math.round((Date.now() - w.at) / 1000)}s ago`)}`);
+    return;
+  }
+  if (sub === "clear") {
+    const r = await client.clearClips();
+    return console.log(`${c.green("✓")} removed ${r.deleted} waiting ${r.deleted === 1 ? "item" : "items"}`);
+  }
+
+  if (sub === "listen") {
+    if (args[1] === "on" || args[1] === "off") return installListener(ctx, args[1] === "on");
+    return listen(ctx);
+  }
+  const sent = await sendClipboard(client, args);
+  if (!sent.length) fail("the clipboard is empty (or this system's clipboard can't be read; pass a file: 0b clip <file>)");
+  console.log(`${c.green("✓")} sent ${sent.join(", ")}. Ask your agent to look at it ("I sent you a screenshot"); it reads it once with bridge__clipboard, within 10 minutes.`);
+}
+
+/** Send the given files, or what's on the clipboard. Returns what was sent ("clipboard.png (2 KB)"); empty when there was nothing. */
+async function sendClipboard(client: CloudClient, files: string[]): Promise<string[]> {
+  const dir = mkdtempSync(join(tmpdir(), "0b-clip-"));
+  try {
+    let text: string | null = null;
+    if (files.length) files = files.map((f) => (existsSync(f) ? f : fail(`${f} not found`)));
+    else {
+      const got = process.platform === "darwin" ? readMacClipboard(dir) : readLinuxClipboard(dir);
+      if (!got) return [];
+      if ("text" in got) text = got.text;
+      else files = got.files;
+    }
+    const sent: string[] = [];
+    const from = hostname().replace(/\.local$/, "");
+    if (text !== null) {
+      const r = await client.sendClip({ name: "clipboard.txt", mime: "text/plain", data: Buffer.from(text).toString("base64"), from });
+      sent.push(`text (${kb(r.size)})`);
+    }
+    for (const f of files) {
+      if (!statSync(f).isFile()) fail(`${f} is a folder; send files`);
+      const mime = mimeOf(f);
+      const path = mime.startsWith("image/") ? fitImage(f, dir) : f;
+      const r = await client.sendClip({ name: basename(path), mime: mimeOf(path), data: readFileSync(path).toString("base64"), from });
+      sent.push(`${r.name} (${kb(r.size)})`);
+    }
+    return sent;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ── Answering agents' requests (0b clip listen) ─────────────
+
+/** Ask the person at this Mac. Tests answer with ZEROBRIDGE_CLIP_ANSWER=allow|deny instead. */
+function ask(who: string): { answer: Promise<boolean>; cancel: () => void } {
+  const preset = process.env.ZEROBRIDGE_CLIP_ANSWER;
+  if (preset) return { answer: Promise.resolve(preset === "allow"), cancel: () => {} };
+  if (process.platform !== "darwin") return { answer: Promise.resolve(false), cancel: () => {} };
+  const q = (s: string) => `"${s.replace(/["\\]/g, "")}"`;
+  const script = `display dialog ${q(`${who} wants to see what's on your clipboard (a screenshot, copied files or text).`)} with title "0bridge" buttons {"Don't Allow", "Allow"} default button "Allow" cancel button "Don't Allow" giving up after 60 with icon caution`;
+  const child: ChildProcess = spawn("osascript", ["-e", script], { stdio: ["ignore", "pipe", "ignore"] });
+  let out = "";
+  child.stdout!.on("data", (d) => (out += d));
+  const answer = new Promise<boolean>((res) => child.on("close", (code) => res(code === 0 && /button returned:Allow/.test(out) && !/gave up:true/.test(out))));
+  return { answer, cancel: () => child.kill() };
+}
+
+/**
+ * Keep a connection to 0bridge open; when an agent asks for the clipboard (bridge__clipboard with
+ * nothing waiting), ask here and send it if allowed. Reconnects on its own.
+ */
+async function listen(ctx: Context): Promise<void> {
+  const { cfg, client } = cloudClient(ctx);
+  const token = openSecretStore(ctx.storeDir).get(deviceTokenKey(cfg));
+  if (!token) fail("sign in first: 0b login");
+  if (typeof WebSocket === "undefined") fail("this needs Node 22 or newer (WebSocket)");
+  const url = `${cfg.server.replace(/\/+$/, "").replace(/^http/, "ws")}/api/clip/listen`;
+  const stamp = () => new Date().toISOString().slice(11, 19);
+  let delay = 1000;
+  for (;;) {
+    await new Promise<void>((resolve) => {
+      // Node's and Bun's WebSocket both take headers here (not in the web standard).
+      const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${token}` } } as never);
+      let open: { id: string; cancel: () => void } | null = null;
+      const ping = setInterval(() => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ type: "ping" })), 50_000);
+      ws.onopen = () => {
+        delay = 1000;
+        console.log(`${stamp()} listening for clipboard requests`);
+      };
+      ws.onmessage = async (e) => {
+        let m: { type?: string; id?: string; who?: string };
+        try {
+          m = JSON.parse(String(e.data));
+        } catch {
+          return;
+        }
+        if (m.type === "done" && open && open.id === m.id) {
+          open.cancel();
+          open = null;
+        }
+        if (m.type !== "request" || !m.id || open) return;
+        const q = ask(m.who ?? "An AI tool");
+        open = { id: m.id, cancel: q.cancel };
+        const allowed = await q.answer;
+        if (open?.id !== m.id) return; // answered on another computer
+        open = null;
+        let sent: string[] = [];
+        if (allowed) sent = await sendClipboard(client, []).catch(() => []);
+        console.log(`${stamp()} ${m.who}: ${allowed ? `sent ${sent.join(", ") || "nothing (empty clipboard)"}` : "declined"}`);
+        ws.send(JSON.stringify({ type: allowed ? "sent" : "denied", id: m.id }));
+      };
+      ws.onclose = () => {
+        clearInterval(ping);
+        open?.cancel();
+        resolve();
+      };
+      ws.onerror = () => {};
+    });
+    await new Promise((r) => setTimeout(r, delay));
+    delay = Math.min(delay * 2, 30_000);
+  }
+}
+
+/** Run `0b clip listen` at login and keep it running (macOS LaunchAgent). */
+function installListener(ctx: Context, on: boolean): void {
+  if (process.platform !== "darwin") {
+    console.log(
+      on
+        ? "Answering clipboard requests belongs on the computer you copy on (your Mac): run `0b clip listen on` there. Agents on this machine read what it sends. (`0b clip listen` answers from this machine's clipboard, in this terminal.)"
+        : "Stop your `0b clip listen` process.",
+    );
+    return;
+  }
+  installAgent(ctx, "dev.0bridge.clip", on ? ["clip", "listen"] : null, { keepAlive: true });
+  console.log(
+    on
+      ? `${c.green("✓")} This Mac answers clipboard requests: when an agent asks, a dialog here asks you first.`
+      : `${c.green("✓")} This Mac no longer answers clipboard requests (0b clip still sends).`,
+  );
+}

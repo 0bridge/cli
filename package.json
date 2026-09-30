@@ -1,0 +1,15 @@
+{
+  "name": "0bridge-cli-workspace",
+  "private": true,
+  "type": "module",
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "test": "bun test",
+    "build": "bun run --cwd apps/cli build"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.0",
+    "@types/bun": "latest"
+  }
+}

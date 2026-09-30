@@ -1,0 +1,47 @@
+{
+  "name": "0bridge",
+  "version": "0.2.14",
+  "description": "One bridge for all your AI agent tooling — MCP servers, skills, and AGENTS.md synced across Claude Code, Codex, Cursor, and more.",
+  "type": "module",
+  "bin": {
+    "0b": "dist/0b.js",
+    "0bridge": "dist/0b.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20.12"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "claude-code",
+    "codex",
+    "cursor",
+    "agents",
+    "skills",
+    "ai"
+  ],
+  "license": "FSL-1.1-ALv2",
+  "homepage": "https://0bridge.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/0bridge/cli.git",
+    "directory": "apps/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/0bridge/cli/issues"
+  },
+  "devDependencies": {
+    "@0bridge/core": "workspace:*",
+    "@clack/prompts": "^1.8.1",
+    "diff": "^8"
+  },
+  "scripts": {
+    "build": "bun build src/index.ts --target=node --minify --outfile dist/0b.js --banner '#!/usr/bin/env node' --define VERSION=\\\"$npm_package_version\\\"",
+    "prepublishOnly": "bun run build"
+  }
+}

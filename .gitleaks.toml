@@ -1,0 +1,8 @@
+# The history redactor's tests feed it key-shaped fakes (a JWT from jwt.io, "rk_live_abcdef123456")
+# to check they get masked. Nothing in them is a real credential.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "fake credentials in the redactor's tests"
+paths = ['''packages/core/test/history\.test\.ts''']

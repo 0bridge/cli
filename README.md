@@ -38,4 +38,4 @@ This repository mirrors the client from 0bridge's private monorepo, so pull requ
 
 ## License
 
-Source available under the [Functional Source License 1.1, Apache 2.0 future license](LICENSE) (FSL-1.1-ALv2): use it, read it, change it and run it however you like, except to build a product that competes with 0bridge. Each version becomes Apache 2.0 two years after its release. Versions up to 0.2.14 were published under MIT.
+Source available under the [Functional Source License 1.1, Apache 2.0 future license](LICENSE) (FSL-1.1-ALv2): use it, read it, change it and run it however you like, except to build a product that competes with 0bridge. Each version becomes Apache 2.0 two years after its release. Versions up to 0.2.13 were published under MIT.

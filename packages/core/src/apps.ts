@@ -1,4 +1,4 @@
-// No imports: the web dashboard (apps/web) bundles this for the browser.
+// No imports: the web dashboard bundles this for the browser.
 
 /**
  * Services whose MCP server doesn't let 0bridge register itself (no dynamic client

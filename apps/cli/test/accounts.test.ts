@@ -13,8 +13,8 @@ const fresh = (): Context => {
 const A = { server: "https://0bridge.dev", userId: "userAAAA1", login: "me", email: "me@example.com", tokenId: "t1" };
 const B = { server: "https://0bridge.dev", userId: "userBBBB2", login: "work", email: "me@acme.com", tokenId: "t2" };
 
-describe("which account a command uses (D42)", () => {
-  test("inside a checkout linked to a project: the project's account; links from before D42 belong to the first account", () => {
+describe("which account a command uses", () => {
+  test("inside a checkout linked to a project: the project's account; links from before several accounts belong to the first account", () => {
     const ctx = fresh();
     saveCloud(ctx, A);
     saveCloud(ctx, B);

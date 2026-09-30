@@ -6,7 +6,7 @@ import { loadCloud, loadHistoryConfig, type Context } from "@0bridge/core";
 import { c } from "./ui.ts";
 
 /**
- * One background job keeps this machine's conversation history (D34) and personal files (D35)
+ * One background job keeps this machine's conversation history and personal files
  * in sync: `0b background` every 30 minutes, through a macOS LaunchAgent (a crontab line elsewhere).
  */
 

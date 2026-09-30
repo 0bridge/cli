@@ -13,8 +13,8 @@ const fresh = (): Context => {
 const A = { server: "https://0bridge.dev", userId: "userAAAA1", login: "Sam", email: "me@example.com", tokenId: "t1" };
 const B = { server: "https://0bridge.dev", userId: "userBBBB2", login: "Sam at Acme", email: "sam@acme.com", tokenId: "t2" };
 
-describe("several accounts (D42)", () => {
-  test("a sign-in from before D42 (cloud.json only) is the first account, in the unsuffixed slot", () => {
+describe("several accounts", () => {
+  test("a sign-in from before several accounts (cloud.json only) is the first account, in the unsuffixed slot", () => {
     const ctx = fresh();
     saveCloud(ctx, A);
     // Old layout: just cloud.json.

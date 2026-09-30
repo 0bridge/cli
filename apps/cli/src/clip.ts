@@ -8,7 +8,7 @@ import { cloudClient } from "./cloud.ts";
 import { c } from "./ui.ts";
 
 /**
- * The clipboard relay (D39): send a screenshot, file or text from this computer to 0bridge, where
+ * The clipboard relay: send a screenshot, file or text from this computer to 0bridge, where
  * an agent anywhere (over SSH, on a server, in claude.ai) reads it once with `bridge__clipboard`.
  * Nothing is sent unless the user runs this; items wait 10 minutes.
  */
@@ -164,17 +164,26 @@ async function sendClipboard(client: CloudClient, files: string[]): Promise<stri
 
 // ── Answering agents' requests (0b clip listen) ─────────────
 
-/** Ask the person at this Mac. Tests answer with ZEROBRIDGE_CLIP_ANSWER=allow|deny instead. */
-function ask(who: string): { answer: Promise<boolean>; cancel: () => void } {
+/** How long "Allow for 1 Hour" lets the same tool read the clipboard without asking again. */
+const TRUST_MS = 60 * 60 * 1000;
+type Answer = "once" | "hour" | false;
+
+/** Ask the person at this Mac. Tests answer with ZEROBRIDGE_CLIP_ANSWER=allow|hour|deny instead. */
+function ask(who: string): { answer: Promise<Answer>; cancel: () => void } {
   const preset = process.env.ZEROBRIDGE_CLIP_ANSWER;
-  if (preset) return { answer: Promise.resolve(preset === "allow"), cancel: () => {} };
+  if (preset) return { answer: Promise.resolve(preset === "hour" ? "hour" : preset === "allow" ? "once" : false), cancel: () => {} };
   if (process.platform !== "darwin") return { answer: Promise.resolve(false), cancel: () => {} };
   const q = (s: string) => `"${s.replace(/["\\]/g, "")}"`;
-  const script = `display dialog ${q(`${who} wants to see what's on your clipboard (a screenshot, copied files or text).`)} with title "0bridge" buttons {"Don't Allow", "Allow"} default button "Allow" cancel button "Don't Allow" giving up after 60 with icon caution`;
+  const script = `display dialog ${q(`${who} wants to see what's on your clipboard (a screenshot, copied files or text).`)} with title "0bridge" buttons {"Don't Allow", "Allow for 1 Hour", "Allow"} default button "Allow" cancel button "Don't Allow" giving up after 60 with icon caution`;
   const child: ChildProcess = spawn("osascript", ["-e", script], { stdio: ["ignore", "pipe", "ignore"] });
   let out = "";
   child.stdout!.on("data", (d) => (out += d));
-  const answer = new Promise<boolean>((res) => child.on("close", (code) => res(code === 0 && /button returned:Allow/.test(out) && !/gave up:true/.test(out))));
+  const answer = new Promise<Answer>((res) =>
+    child.on("close", (code) => {
+      if (code !== 0 || /gave up:true/.test(out)) return res(false);
+      res(/button returned:Allow for 1 Hour/.test(out) ? "hour" : /button returned:Allow/.test(out) ? "once" : false);
+    }),
+  );
   return { answer, cancel: () => child.kill() };
 }
 
@@ -189,6 +198,8 @@ async function listen(ctx: Context): Promise<void> {
   if (typeof WebSocket === "undefined") fail("this needs Node 22 or newer (WebSocket)");
   const url = `${cfg.server.replace(/\/+$/, "").replace(/^http/, "ws")}/api/clip/listen`;
   const stamp = () => new Date().toISOString().slice(11, 19);
+  // Tools allowed for an hour ("Claude Code on dgithost" → until when); asked again after that.
+  const trusted = new Map<string, number>();
   let delay = 1000;
   for (;;) {
     await new Promise<void>((resolve) => {
@@ -212,11 +223,14 @@ async function listen(ctx: Context): Promise<void> {
           open = null;
         }
         if (m.type !== "request" || !m.id || open) return;
-        const q = ask(m.who ?? "An AI tool");
+        const who = m.who ?? "An AI tool";
+        const q = (trusted.get(who) ?? 0) > Date.now() ? { answer: Promise.resolve<Answer>("once"), cancel: () => {} } : ask(who);
         open = { id: m.id, cancel: q.cancel };
-        const allowed = await q.answer;
+        const answer = await q.answer;
         if (open?.id !== m.id) return; // answered on another computer
         open = null;
+        if (answer === "hour") trusted.set(who, Date.now() + TRUST_MS);
+        const allowed = answer !== false;
         let sent: string[] = [];
         if (allowed) sent = await sendClipboard(client, []).catch(() => []);
         console.log(`${stamp()} ${m.who}: ${allowed ? `sent ${sent.join(", ") || "nothing (empty clipboard)"}` : "declined"}`);

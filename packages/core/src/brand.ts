@@ -1,4 +1,4 @@
-// No imports: the web dashboard (apps/web) bundles this for the browser.
+// No imports: the web dashboard bundles this for the browser.
 
 /**
  * The 0bridge mark (G5 "Deck"): an arch standing on a deck, a bridge seen from the side, inside

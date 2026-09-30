@@ -1,8 +1,8 @@
-// No imports: the dashboard (apps/web) bundles this for the browser, and the CLI uses it in Node.
+// No imports: the dashboard bundles this for the browser, and the CLI uses it in Node.
 // Everything is WebCrypto, so both sides compute the same bytes.
 
 /**
- * The vault's key handling that happens outside the CLI's own machine (D28 step 4):
+ * The vault's key handling that happens outside the CLI's own machine:
  *  - opening values in the dashboard (same format as the CLI's AES-256-GCM seal),
  *  - wrapping the vault key with a passkey's PRF output, so a passkey can unlock the dashboard,
  *  - handing the vault key to a new machine over the gateway without the gateway reading it

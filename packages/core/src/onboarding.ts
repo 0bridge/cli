@@ -112,7 +112,7 @@ When the user asks to set up this machine or a repo ("sync the backend dev envir
 `;
 
 /**
- * The `0bridge-secrets` skill (D28): how agents use the user's vault. Values reach commands as
+ * The `0bridge-secrets` skill: how agents use the user's vault. Values reach commands as
  * environment variables through `0b exec`, so an agent can run things without ever seeing a
  * value. It's guidance, not a lock: `.env` files keep working.
  */

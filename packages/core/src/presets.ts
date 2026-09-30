@@ -1,4 +1,4 @@
-// No imports: the web dashboard (apps/web) bundles this for the browser.
+// No imports: the web dashboard bundles this for the browser.
 
 /**
  * Well-known remote MCP servers, so `0b connect linear` just works; anything else is still found by

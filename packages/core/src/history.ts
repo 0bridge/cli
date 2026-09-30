@@ -7,7 +7,7 @@ import { readJson, writeAtomic } from "./util.ts";
 import type { Context } from "./types.ts";
 
 /**
- * Conversation history (D34): read AI tools' session logs on this machine, keep the conversation
+ * Conversation history: read AI tools' session logs on this machine, keep the conversation
  * itself — what the person asked, what the agent answered, and the questions the agent asked back
  * with their answers — mask secrets, and hand new messages to the uploader. Tool calls, their
  * output and reasoning are left out. Each source is read from where the last sync stopped.

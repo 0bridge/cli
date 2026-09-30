@@ -21,7 +21,7 @@ import { localKey } from "./vault.ts";
 import { c } from "./ui.ts";
 
 /**
- * Conversation history on this machine (D34): `0b history on` uploads the conversations from
+ * Conversation history on this machine: `0b history on` uploads the conversations from
  * Claude Code and the Claude app, Codex (CLI and app), Grok and Cursor — secrets masked here
  * first — and every AI tool can search them through 0bridge.
  * In end-to-end mode the text is sealed with the vault key and only this CLI can search it.

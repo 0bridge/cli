@@ -6,7 +6,7 @@ import { readJson, writeAtomic } from "./util.ts";
 import { accountSlot, loadCloud } from "./cloud.ts";
 
 /**
- * The secrets vault (D28): values encrypted on this machine with the vault key, which never
+ * The secrets vault: values encrypted on this machine with the vault key, which never
  * leaves the user's devices. The gateway stores and syncs ciphertext only. Names, scopes and
  * environments stay readable so they can be listed without the key.
  */
@@ -23,7 +23,7 @@ export const ENV_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 export const MAX_VALUE_BYTES = 32 * 1024;
 /**
  * Environments a device only gets after the user approves it in the browser (the gateway
- * withholds their ciphertext until then). Kept in step with apps/gateway/src/vault.ts.
+ * withholds their ciphertext until then). Kept in step with the gateway.
  */
 export const PROTECTED_ENVS = new Set(["prod"]);
 

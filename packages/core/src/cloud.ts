@@ -71,14 +71,14 @@ export interface CloudConfig {
 }
 
 /**
- * A 0bridge account signed in on this machine (D42). Several can be at once, like a company's and
+ * A 0bridge account signed in on this machine. Several can be at once, like a company's and
  * your own: AI tools get one 0bridge entry, for the default account, and a checkout linked to a
  * project (`0b project link`) uses the account the project belongs to.
  */
 export interface CloudAccount extends CloudConfig {
   /**
    * Suffix of this account's keys in the secret store (device token, vault key) and of its vault
-   * copy: "" for one account (the names versions before D42 used), "@<userId>" for the others.
+   * copy: "" for one account (the names versions before several accounts used), "@<userId>" for the others.
    */
   slot: string;
 }
@@ -92,7 +92,7 @@ export interface CloudAccounts {
 const cloudPath = (ctx: Context) => join(ctx.storeDir, "cloud.json");
 const accountsPath = (ctx: Context) => join(ctx.storeDir, "accounts.json");
 
-/** Every account signed in here. A single sign-in from before D42 (cloud.json) becomes the first. */
+/** Every account signed in here. A single sign-in from before several accounts (cloud.json) becomes the first. */
 export function loadAccounts(ctx: Context): CloudAccounts {
   const all = readJson<CloudAccounts>(accountsPath(ctx));
   if (all) return all;
@@ -313,7 +313,7 @@ export class CloudClient {
   setConnectionProjects(id: string, projects: string[], hidden?: string[]) {
     return this.req<{ display: string; projects: string[]; hidden: string[] }>(`/connections/${encodeURIComponent(id)}/projects`, { method: "PUT", body: JSON.stringify({ projects, ...(hidden ? { hidden } : {}) }) });
   }
-  // ── Clipboard relay (D39) ──
+  // ── Clipboard relay ──
   /** Send something for an agent to read once (bridge__clipboard), within 10 minutes. */
   sendClip(item: { name: string; mime: string; data: string; from?: string }) {
     return this.req<{ id: string; name: string; mime: string; size: number; at: number }>("/clip", { method: "POST", body: JSON.stringify(item) });
@@ -343,7 +343,7 @@ export class CloudClient {
   projectToken(id: string, label: string) {
     return this.req<{ id: string; token: string; url: string }>(`/projects/${encodeURIComponent(id)}/token`, { method: "POST", body: JSON.stringify({ label }) });
   }
-  // ── Personal files kept out of git (D35) ──
+  // ── Personal files kept out of git ──
   files(repo?: string) {
     return this.req<RemoteFile[]>(`/files${repo ? `?repo=${encodeURIComponent(repo)}` : ""}`);
   }
@@ -360,7 +360,7 @@ export class CloudClient {
   purgeFiles(repo?: string, path?: string) {
     return this.req<{ deleted: number }>(`/files?${new URLSearchParams({ ...(repo ? { repo } : {}), ...(path ? { path } : {}) })}`, { method: "DELETE" });
   }
-  // ── Conversation history (D34) ──
+  // ── Conversation history ──
   historyStats() {
     return this.req<HistoryStats>("/history");
   }
@@ -421,7 +421,7 @@ export class CloudClient {
   disconnect(id: string) {
     return this.req<void>(`/connections/${encodeURIComponent(id)}`, { method: "DELETE" });
   }
-  /** The vault's key id and every ciphertext (D28). */
+  /** The vault's key id and every ciphertext. */
   vault() {
     return this.req<VaultState>("/vault");
   }

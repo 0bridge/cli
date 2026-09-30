@@ -4,7 +4,7 @@ import { accountAt } from "./links.ts";
 import { c } from "./ui.ts";
 
 /**
- * `0b account`: the 0bridge accounts signed in here (D42). The default one is what every AI
+ * `0b account`: the 0bridge accounts signed in here. The default one is what every AI
  * tool's 0bridge entry uses; a checkout linked to a project uses the project's account.
  * Returns true when the tools need syncing (the default changed).
  */

@@ -198,7 +198,7 @@ const ctx = defaultContext();
 /**
  * Commands about this machine as a whole: they use the default account unless --account says
  * otherwise. Everything else, run inside a checkout linked to a project, uses the account that
- * project belongs to (D42), so nobody picks accounts by hand.
+ * project belongs to, so nobody picks accounts by hand.
  */
 const MACHINE_WIDE = new Set(["setup", "init", "import", "apply", "mcp", "skill", "skills", "tool", "login", "logout", "account", "accounts", "background", "backups", "restore", "profile", "profiles", "history"]);
 

@@ -10,7 +10,7 @@ import { accountForRepo } from "./links.ts";
 import { c } from "./ui.ts";
 
 /**
- * Personal files kept out of git (D35): AGENTS.local.md, CLAUDE.local.md (often a symlink to it),
+ * Personal files kept out of git: AGENTS.local.md, CLAUDE.local.md (often a symlink to it),
  * .claude/settings.local.json … follow the repo to every machine and clone. Sealed with the vault
  * key before upload; every change is a version the user can go back to. Pull never overwrites a
  * file changed here: a conflicting copy is written next to it instead.
@@ -233,7 +233,7 @@ export async function syncAllFiles(ctx: Context, quiet = true): Promise<void> {
   const cfg = load(ctx);
   const repos = Object.entries(cfg.repos).filter(([, e]) => Object.keys(e.files).length);
   if (!repos.length) return;
-  // A repo whose checkouts are linked to another account's project syncs with that account (D42).
+  // A repo whose checkouts are linked to another account's project syncs with that account.
   const byAccount = new Map<string | undefined, typeof repos>();
   for (const entry of repos) {
     const account = ctx.account ?? accountForRepo(ctx, entry[0]) ?? undefined;

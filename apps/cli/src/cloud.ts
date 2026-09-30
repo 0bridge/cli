@@ -246,7 +246,7 @@ export async function login(ctx: Context, server = process.env.ZEROBRIDGE_SERVER
   if (!opts.embedded) p.intro(c.bold(" 0bridge login "));
   const before = loadAccounts(ctx);
   // Already signed in: this adds an account (or signs one in again). The browser shows which
-  // account it approves with, and switches or adds one right there (D42).
+  // account it approves with, and switches or adds one right there.
   const current = defaultAccount(before);
   if (current && !opts.embedded)
     p.log.info(`Signed in as ${c.bold(accountName(current))}${before.accounts.length > 1 ? ` and ${before.accounts.length - 1} more` : ""}. Signing in with another account adds it; pick the account in the browser.`);

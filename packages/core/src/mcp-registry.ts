@@ -2,7 +2,7 @@
  * The official MCP registry (registry.modelcontextprotocol.io), searched for a service's MCP
  * server. Shared by the gateway, the dashboard and the CLI: the registry doesn't answer requests
  * from Cloudflare Workers, so the browser and the CLI ask it themselves and add what they find to
- * the gateway's discovery (D41). An entry is the service's own ("official") when its namespace or
+ * the gateway's discovery. An entry is the service's own ("official") when its namespace or
  * its server's domain is the service's; the rest are other people's servers, never picked on
  * their own.
  */

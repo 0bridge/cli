@@ -42,7 +42,7 @@ import { cloudClient, openBrowser } from "./cloud.ts";
 import { c } from "./ui.ts";
 
 /**
- * The secrets vault on this machine (D28): values are encrypted here with the vault key, which
+ * The secrets vault on this machine: values are encrypted here with the vault key, which
  * lives in the OS keychain and never goes to the server. Agents use values by name through
  * `0b exec`; they never need to read one.
  */

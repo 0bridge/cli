@@ -3,13 +3,13 @@ import { loadAccounts, readJson, writeAtomic, type Context } from "@0bridge/core
 
 /**
  * Checkouts linked to a project (`0b project link`), and so to the account the project belongs
- * to (D42): commands run inside one use that account without being told.
+ * to: commands run inside one use that account without being told.
  */
 export interface Link {
   projectId: string;
   repo: string;
   tokenId: string;
-  /** The account the project belongs to. Missing on links from before D42: the account in the unsuffixed slot. */
+  /** The account the project belongs to. Missing on links from before several accounts: the account in the unsuffixed slot. */
   userId?: string;
 }
 export interface Links {

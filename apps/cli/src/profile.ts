@@ -225,7 +225,7 @@ export async function profileCommand(ctx: Context, args: string[]) {
 
 /**
  * `0b exec [--env dev] [--shim cli] -- cmd …`: run a command with this repo's CLI profile and
- * its vault values as environment variables (D28). When the output goes to a program rather
+ * its vault values as environment variables. When the output goes to a program rather
  * than a terminal (an agent reading it), secret values in it are replaced with ***.
  */
 /**

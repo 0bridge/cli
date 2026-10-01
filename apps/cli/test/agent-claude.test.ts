@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClaudeAdapter, parseClaudeLine, userMessage } from "../src/agent/adapters/claude.ts";
 import type { AgentEvent } from "../src/agent/adapters/types.ts";
+import { fakeBin } from "./fake-bin.ts";
 
 /**
  * Claude Code's stream-json, as `claude -p --output-format stream-json --verbose` 2.1.286 writes
@@ -46,13 +47,12 @@ describe("Claude Code stream-json", () => {
   });
 
   test("the adapter runs claude headless, one session per task, and resumes it for follow-ups", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "0b-agent-claude-"));
+    const dir = realpathSync.native(mkdtempSync(join(tmpdir(), "0b-agent-claude-")));
     // A stand-in claude: records its arguments, answers each stdin message, exits when stdin ends.
-    const bin = join(dir, "claude");
-    writeFileSync(
-      bin,
-      `#!/usr/bin/env bun
-const { appendFileSync } = require("node:fs");
+    const bin = fakeBin(
+      dir,
+      "claude",
+      `const { appendFileSync } = require("node:fs");
 appendFileSync(${JSON.stringify(join(dir, "calls.jsonl"))}, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), claudecode: process.env.CLAUDECODE ?? null, profile: process.env.CLAUDE_CONFIG_DIR ?? null }) + "\\n");
 const sid = process.argv[process.argv.indexOf(process.argv.includes("--resume") ? "--resume" : "--session-id") + 1];
 const out = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
@@ -71,7 +71,6 @@ process.stdin.on("data", (d) => {
 });
 `,
     );
-    chmodSync(bin, 0o755);
     const asks: string[] = [];
     const adapter = new ClaudeAdapter({
       self: (sub, file) => ["0b", "agent", sub, file],
@@ -117,10 +116,8 @@ process.stdin.on("data", (d) => {
   });
 
   test("stop ends the run as stopped", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "0b-agent-claude-"));
-    const bin = join(dir, "claude");
-    writeFileSync(bin, `#!/usr/bin/env bun\nsetInterval(() => {}, 1000);\n`);
-    chmodSync(bin, 0o755);
+    const dir = realpathSync.native(mkdtempSync(join(tmpdir(), "0b-agent-claude-")));
+    const bin = fakeBin(dir, "claude", `setInterval(() => {}, 1000);\n`);
     const adapter = new ClaudeAdapter({ self: (sub, file) => ["0b", sub, file], taskFile: (t) => join(dir, t), runDir: dir, onAsk: () => {}, home: dir, bin });
     const run = await adapter.start({ task: "t_stop01", cwd: dir, prompt: "wait", mode: "edit" }, () => {});
     await run.stop();

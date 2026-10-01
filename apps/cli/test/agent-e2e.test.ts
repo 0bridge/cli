@@ -19,7 +19,7 @@ const CLI = join(import.meta.dir, "../src/index.ts");
 const GATEWAY = join(import.meta.dir, "../../gateway");
 
 describe.skipIf(!process.env.ZEROBRIDGE_E2E)("agent daemon end to end", () => {
-  const home = realpathSync(mkdtempSync(join(tmpdir(), "0b-agent-e2e-")));
+  const home = realpathSync.native(mkdtempSync(join(tmpdir(), "0b-agent-e2e-")));
   const env = { ...process.env, ZEROBRIDGE_USER_HOME: home, ZEROBRIDGE_DIR: join(home, ".0bridge"), ZEROBRIDGE_SECRET_STORE: "file", ZEROBRIDGE_AGENT_FAKE: "1", BROWSER: join(GATEWAY, "test/fake-browser.ts"), NO_COLOR: "1" };
   const repo = join(home, "work", "app");
   let daemon: ReturnType<typeof spawn> | null = null;

@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CodexAdapter, describeApproval, mapCodexNotification } from "../src/agent/adapters/codex.ts";
 import type { AgentEvent } from "../src/agent/adapters/types.ts";
+import { fakeBin } from "./fake-bin.ts";
 import { DEFAULT_DENY } from "../src/agent/policy.ts";
 
 /**
@@ -62,11 +63,10 @@ describe("Codex app-server messages", () => {
 
 /** A stand-in `codex app-server`: a scripted turn with two approval requests. */
 function fakeCodex(dir: string): string {
-  const bin = join(dir, "codex");
-  writeFileSync(
-    bin,
-    `#!/usr/bin/env bun
-const { appendFileSync } = require("node:fs");
+  return fakeBin(
+    dir,
+    "codex",
+    `const { appendFileSync } = require("node:fs");
 const log = (o) => appendFileSync(${JSON.stringify(join(dir, "rpc.jsonl"))}, JSON.stringify(o) + "\\n");
 if (process.argv[2] === "--version") { console.log("codex-cli 0.157.0"); process.exit(0); }
 const T = "thr-1", U = "turn-1";
@@ -96,8 +96,6 @@ process.stdin.on("data", (d) => {
 });
 `,
   );
-  chmodSync(bin, 0o755);
-  return bin;
 }
 
 describe("Codex adapter", () => {

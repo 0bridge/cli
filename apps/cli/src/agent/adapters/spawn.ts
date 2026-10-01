@@ -100,9 +100,14 @@ export function onLines(stream: NodeJS.ReadableStream | null | undefined, fn: (l
   });
 }
 
-/** Stop a process: a polite signal, then a hard one after `ms`. */
+/**
+ * Stop a process: a polite signal, then a hard one after `ms`. Windows has no signals, and an npm
+ * .cmd shim runs the agent as cmd.exe's child, which outlives cmd.exe (keeping its pipes open)
+ * when only cmd.exe is ended: there the whole tree goes at once.
+ */
 export function kill(child: ChildProcess, ms = 5000): void {
   if (child.exitCode !== null || child.signalCode !== null) return;
+  if (process.platform === "win32" && child.pid && spawnSync("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true }).status === 0) return;
   child.kill("SIGTERM");
   const t = setTimeout(() => child.exitCode === null && child.signalCode === null && child.kill("SIGKILL"), ms);
   t.unref?.();

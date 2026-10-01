@@ -34,7 +34,11 @@ export const c = {
   cyan: style("cyan"),
 };
 
-export const tilde = (ctx: Context, s: string) => s.split(ctx.home + "/").join("~/");
+/** The home folder as ~ in `s` (paths shown, and logs sent with feedback); Windows paths have \\ too. */
+export const tilde = (ctx: Context, s: string) => {
+  const out = s.split(ctx.home + "/").join("~/");
+  return process.platform === "win32" ? out.split(ctx.home + "\\").join("~\\") : out;
+};
 
 /** Short human description of where a server runs. */
 export function where(s: McpServer, max = 48): string {

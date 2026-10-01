@@ -271,9 +271,10 @@ export function signInLines(s: DeviceStart, opts: { tty: boolean; columns?: numb
 /**
  * Show where to approve. In order: the link alone on its line; the code (and "pick <match> on the
  * dashboard" when a hint was filed); a terminal QR when `tty`; "Saved a QR code: <file>" with `qr`
- * (a PNG, for agents that can show the user an image). Then the browser opens on the link when one can.
+ * (a PNG, for agents that can show the user an image). Then the browser opens on the link when one can
+ * (`browser: false`: never, for a link that's meant for someone at another computer).
  */
-export function printSignInLink(s: DeviceStart, opts: { tty: boolean; qr?: string }): void {
+export function printSignInLink(s: DeviceStart, opts: { tty: boolean; qr?: string; browser?: boolean }): void {
   let savedQr: string | null = null;
   let qrError: string | null = null;
   if (opts.qr) {
@@ -285,7 +286,7 @@ export function printSignInLink(s: DeviceStart, opts: { tty: boolean; qr?: strin
     }
   }
   for (const line of signInLines(s, { tty: opts.tty, columns: process.stdout.columns, savedQr, qrError })) console.log(line);
-  if (canOpenBrowser()) {
+  if (opts.browser !== false && canOpenBrowser()) {
     openBrowser(s.link);
     console.log(c.dim("Opened your browser."));
   }

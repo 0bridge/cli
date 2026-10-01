@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, parse } from "node:path";
 import { clampMode, commandParts, DEFAULT_DENY, deniedBy, loadAgentConfig, matchGlob, profileEnv, repoFor, saveAgentConfig, tooBroad, type AgentConfig } from "../src/agent/policy.ts";
 
 const denied = (cmd: string) => deniedBy(DEFAULT_DENY, cmd);
@@ -136,7 +136,7 @@ describe("agent policy: repos and modes", () => {
     mkdirSync(ctx.storeDir, { recursive: true });
     expect(tooBroad(ctx, ctx.home)).not.toBeNull();
     expect(tooBroad(ctx, base)).not.toBeNull();
-    expect(tooBroad(ctx, "/")).not.toBeNull();
+    expect(tooBroad(ctx, parse(base).root)).not.toBeNull();
     expect(tooBroad(ctx, ctx.storeDir)).not.toBeNull();
     expect(tooBroad(ctx, repo)).toBeNull();
   });

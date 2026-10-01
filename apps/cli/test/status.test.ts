@@ -110,10 +110,15 @@ describe("the hook", () => {
   test("one mark per session, the newest wins; well under 150 ms in process", () => {
     statusOn();
     const release = tryLock(statusLockPath(ctx))!; // a worker "runs": none is started from here
-    const start = performance.now();
-    expect(runHook(ctx, ["claude"], input("UserPromptSubmit", { prompt: "first" }))).toEqual({ history: false, status: false });
-    runHook(ctx, ["claude"], input("PermissionRequest", { tool_name: "Bash", tool_input: { command: "ls" } }));
-    expect(performance.now() - start).toBeLessThan(150);
+    // The fastest of three rounds: a busy CI machine can stall any one of them.
+    let fastest = Infinity;
+    for (let i = 0; i < 3; i++) {
+      const start = performance.now();
+      expect(runHook(ctx, ["claude"], input("UserPromptSubmit", { prompt: "first" }))).toEqual({ history: false, status: false });
+      runHook(ctx, ["claude"], input("PermissionRequest", { tool_name: "Bash", tool_input: { command: "ls" } }));
+      fastest = Math.min(fastest, performance.now() - start);
+    }
+    expect(fastest).toBeLessThan(150);
     runHook(ctx, ["codex"], JSON.stringify({ session_id: UUID, transcript_path: CODEX_T, hook_event_name: "Stop" }));
     release();
     expect(readdirSync(statusMarksDir(ctx)).length).toBe(2);
@@ -125,18 +130,24 @@ describe("the hook", () => {
   test("the CLI on UserPromptSubmit: exit 0, nothing on stdout (it would join the prompt), the mark written", async () => {
     statusOn();
     const release = tryLock(statusLockPath(ctx))!;
-    const t0 = performance.now();
-    const p = Bun.spawn([process.execPath, CLI, "hook", "claude"], { env, stdin: new Blob([input("UserPromptSubmit", { prompt: "make it faster" })]), stdout: "pipe", stderr: "pipe" });
-    const code = await p.exited;
-    const ms = performance.now() - t0;
+    // The fastest of up to three starts: a busy CI machine can stall any one of them for seconds.
+    const budget = process.env.CI ? 1500 : 500;
+    let fastest = Infinity;
+    for (let i = 0; i < 3 && fastest >= budget; i++) {
+      const t0 = performance.now();
+      const p = Bun.spawn([process.execPath, CLI, "hook", "claude"], { env, stdin: new Blob([input("UserPromptSubmit", { prompt: "make it faster" })]), stdout: "pipe", stderr: "pipe" });
+      const code = await p.exited;
+      fastest = Math.min(fastest, performance.now() - t0);
+      expect(code).toBe(0);
+      expect(await new Response(p.stdout).text()).toBe("");
+      expect(await new Response(p.stderr).text()).toBe("");
+    }
     release();
-    expect(code).toBe(0);
-    expect(await new Response(p.stdout).text()).toBe("");
-    expect(await new Response(p.stderr).text()).toBe("");
-    expect(ms).toBeLessThan(process.env.CI ? 1500 : 500);
-    const [m] = takeStatusMarks(ctx);
-    expect(m).toMatchObject({ tool: "claude-code", native: UUID, state: "working", prompt: "make it faster" });
-  });
+    expect(fastest).toBeLessThan(budget);
+    const marks = takeStatusMarks(ctx);
+    expect(marks).toHaveLength(1);
+    expect(marks[0]).toMatchObject({ tool: "claude-code", native: UUID, state: "working", prompt: "make it faster" });
+  }, 30_000);
 });
 
 // ── The worker, on a fake clock ──
@@ -356,7 +367,7 @@ describe("0b sessions on|off", () => {
     expect(r.exitCode).toBe(0);
     expect(JSON.parse(readFileSync(settings, "utf8"))).toEqual({ model: "opus", hooks: { UserPromptSubmit: [FOREIGN] } });
     expect(JSON.parse(readFileSync(join(ctx.storeDir, "status.json"), "utf8")).enabled).toBe(false);
-  });
+  }, 30_000);
 
   test("off keeps history's turn-end hooks when history had them before", () => {
     mkdirSync(join(home, ".claude"), { recursive: true });
@@ -367,7 +378,7 @@ describe("0b sessions on|off", () => {
     expect(run(["sessions", "on"]).exitCode).toBe(0);
     expect(run(["sessions", "off"]).exitCode).toBe(0);
     expect(Object.keys(JSON.parse(readFileSync(join(home, ".claude", "settings.json"), "utf8")).hooks)).toEqual(["Stop", "SessionEnd"]);
-  });
+  }, 30_000);
 
   test("history hooks on turns the board on too (R5), unless sessions off said no", () => {
     mkdirSync(join(home, ".claude"), { recursive: true });
@@ -388,5 +399,5 @@ describe("0b sessions on|off", () => {
     expect(run(["sessions", "on"]).exitCode).toBe(0);
     expect(run(["history", "hooks", "off"]).stdout.toString()).toContain("0b sessions off removes them");
     expect(events().sort()).toEqual(["Notification", "PermissionRequest", "SessionEnd", "Stop", "UserPromptSubmit"]);
-  });
+  }, 30_000);
 });

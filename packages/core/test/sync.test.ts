@@ -234,7 +234,8 @@ test("instructions block keeps user text", () => {
   expect(applyBlock("shared\n", "shared")).not.toContain("shared\n\n<!--");
 });
 
-test("file secret store is 0600 inside a 0700 dir from the first write", () => {
+// POSIX modes: Windows has none to set (stat reports 0666), and there the default store is DPAPI.
+test.skipIf(process.platform === "win32")("file secret store is 0600 inside a 0700 dir from the first write", () => {
   const dir = join(home, "private-store");
   const s = openSecretStore(dir);
   s.set("a", "v1");

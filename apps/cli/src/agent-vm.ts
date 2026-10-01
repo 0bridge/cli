@@ -213,7 +213,8 @@ async function signIn(ctx: Context, server: string, vm: { name: string; days: nu
   const start = await startDeviceSignIn(server, { ...(email ? { hint: { email, machine } } : {}), agentVm: true });
   // Saved before waiting: an agent's shell that kills this command mid-wait loses nothing.
   savePending(ctx, { server, start, ...vm, ...(failedAttach ? { failedAttach } : {}) });
-  printSignInLink(start, { tty: false, ...(opts.qr ? { qr: opts.qr } : {}) });
+  // The link is for the person the agent relays it to, not for a browser on the agent's computer.
+  printSignInLink(start, { tty: false, browser: false, ...(opts.qr ? { qr: opts.qr } : {}) });
   if (opts.noWait) return stillPending(start);
   let token: string;
   try {

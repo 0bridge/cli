@@ -11,7 +11,7 @@ import type { EventFrame, HubRequest } from "../src/agent/protocol.ts";
 
 /** The daemon with stand-in agents, a scratch git repo and a fake hub that records frames. */
 function setup(cfg: Partial<AgentConfig> = {}) {
-  const base = realpathSync(mkdtempSync(join(tmpdir(), "0b-agent-daemon-")));
+  const base = realpathSync.native(mkdtempSync(join(tmpdir(), "0b-agent-daemon-")));
   const ctx = { home: join(base, "home"), storeDir: join(base, "home", ".0bridge") };
   const repo = join(base, "work", "app");
   mkdirSync(repo, { recursive: true });

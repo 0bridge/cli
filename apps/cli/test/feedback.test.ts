@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import type { Context } from "@0bridge/core";
 import { buildReport, collectLogs, fromEditor, logFiles, tail } from "../src/feedback.ts";
 
@@ -27,18 +27,18 @@ describe("--include-logs", () => {
     const out = collectLogs(ctx, ["my-vault-value-123"], 5);
     expect(out).toBe(
       [
-        "== ~/.0bridge/background.log ==",
+        `== ${join("~", ".0bridge", "background.log")} ==`,
         "line 57",
         "line 58",
         "line 59",
         "sync with STRIPE_SECRET_KEY=[secret] in ~/code/acme",
         "value [secret] leaked",
         "",
-        "== ~/.0bridge/sync/worker.log ==",
+        `== ${join("~", ".0bridge", "sync", "worker.log")} ==`,
         "token [secret] refused",
       ].join("\n"),
     );
-    expect(logFiles(ctx).map((p) => p.slice(home.length))).toEqual([
+    expect(logFiles(ctx).map((p) => p.slice(home.length).split(sep).join("/"))).toEqual([
       "/.0bridge/background.log",
       "/.0bridge/agent.log",
       "/.0bridge/clip.log",

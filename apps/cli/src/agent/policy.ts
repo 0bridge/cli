@@ -104,13 +104,18 @@ export function saveAgentConfig(ctx: Context, cfg: AgentConfig): void {
   writeAtomic(configPath(ctx), JSON.stringify(cfg, null, 2) + "\n", { mode: 0o600 });
 }
 
-const real = (p: string) => {
+/**
+ * `p` resolved, symlinks followed, and on Windows with its long names: the native realpath turns
+ * an 8.3 name (C:\Users\RUNNER~1, as %TEMP% often is) into the one git and the shell report.
+ */
+export function realPath(p: string): string {
   try {
-    return realpathSync(resolve(p));
+    return realpathSync.native(resolve(p));
   } catch {
     return resolve(p);
   }
-};
+}
+const real = realPath;
 const fold = (p: string) => (process.platform === "win32" || process.platform === "darwin" ? p.toLowerCase() : p);
 
 /** `path` is `root` or inside it. */

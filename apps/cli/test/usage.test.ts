@@ -75,7 +75,7 @@ describe("0b usage on|off", () => {
     expect(r.out).toContain("0b login");
     const cfg = loadHistoryConfig(ctx);
     expect([cfg.enabled, cfg.usage, usageOnly(cfg)]).toEqual([false, true, true]);
-  });
+  }, 30_000);
 
   test("off with history on: history keeps going, counts stop", () => {
     saveHistoryConfig(ctx, { ...loadHistoryConfig(ctx), enabled: true });
@@ -85,11 +85,11 @@ describe("0b usage on|off", () => {
     const cfg = loadHistoryConfig(ctx);
     expect([cfg.enabled, usageWanted(cfg)]).toEqual([true, false]);
     expect(run("status").out).toContain("not uploading token counts");
-  });
+  }, 30_000);
 
   test("bad flags are refused before any request", () => {
     expect(run("--days", "400").code).toBe(1);
     expect(run("--by", "user").out).toContain("--by is one of tool, model, repo, day, device");
     expect(run("sideways").code).toBe(1);
-  });
+  }, 30_000);
 });

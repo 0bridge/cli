@@ -1,7 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
-import { resolve } from "node:path";
 import { CloudError, type Context } from "@0bridge/core";
 import { cloudClient } from "../cloud.ts";
 import { installService, serviceInstalled } from "../service.ts";
@@ -10,7 +9,7 @@ import { Daemon, machineName, runDaemon } from "./daemon.ts";
 import { ipcPath, ipcRequest } from "./ipc.ts";
 import { listTasks, readTask } from "./log.ts";
 import { guard, permMcp } from "./perm-mcp.ts";
-import { DEFAULT_DENY, MODES, loadAgentConfig, saveAgentConfig, tooBroad, type Mode } from "./policy.ts";
+import { DEFAULT_DENY, MODES, loadAgentConfig, realPath, saveAgentConfig, tooBroad, type Mode } from "./policy.ts";
 
 /**
  * `0b agent`: let your AI apps start and steer coding agents on this machine, in the repos
@@ -102,14 +101,7 @@ export async function agentCommand(ctx: Context, args: string[], opts: AgentOpti
   }
 }
 
-const real = (p: string) => {
-  const abs = resolve(p);
-  try {
-    return realpathSync(abs);
-  } catch {
-    return abs;
-  }
-};
+const real = realPath;
 
 /** Add (or change the mode of) an allowed repo. */
 function allow(ctx: Context, path: string, mode: Mode | undefined, say: boolean): void {

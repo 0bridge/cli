@@ -1,7 +1,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
-import { basename, extname, join, resolve } from "node:path";
+import { basename, delimiter, extname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { deviceTokenKey, openSecretStore, type CloudClient, type Context } from "@0bridge/core";
 import { installAgent } from "./background.ts";
@@ -91,11 +91,22 @@ JSON.stringify({ files, image, text: text && !text.isNil() ? text.js : null });`
   return got.text ? { text: got.text } : null;
 }
 
+/** The real `xclip` / `wl-paste`, skipping 0bridge's own shims (`0b clip shims`) in ~/.0bridge/bin. */
+function realBin(name: string): string | null {
+  for (const d of (process.env.PATH ?? "").split(delimiter)) {
+    if (!d || d.includes(`${"/"}.0bridge${"/"}bin`)) continue;
+    if (existsSync(join(d, name))) return join(d, name);
+  }
+  return null;
+}
+
 /** Linux (X11 or Wayland): an image if there is one, else text. */
 function readLinuxClipboard(dir: string): { files: string[] } | { text: string } | null {
   const img = join(dir, "clipboard.png");
   for (const cmd of [["wl-paste", "--type", "image/png"], ["xclip", "-selection", "clipboard", "-t", "image/png", "-o"]]) {
-    const r = spawnSync(cmd[0]!, cmd.slice(1));
+    const bin = realBin(cmd[0]!);
+    if (!bin) continue;
+    const r = spawnSync(bin, cmd.slice(1));
     if (r.status === 0 && r.stdout?.length) {
       writeFileSync(img, r.stdout);
       return { files: [img] };
@@ -133,6 +144,9 @@ export async function clipCommand(ctx: Context, args: string[]): Promise<void> {
     return sync(ctx);
   }
   if (sub === "paste") return paste(ctx, args[1]);
+  if (sub === "shims") return installPasteShims(ctx, args[1] !== "off");
+  // What the shims run: `0b clip shim xclip <xclip's own arguments>`.
+  if (sub === "shim" && (args[1] === "xclip" || args[1] === "wl-paste")) return pasteShim(ctx, args[1], args.slice(2));
   const sent = await sendClipboard(client, args);
   if (!sent.length) fail("the clipboard is empty (or this system's clipboard can't be read; pass a file: 0b clip <file>)");
   console.log(`${c.green("✓")} sent ${sent.join(", ")}. Ask your agent to look at it ("I sent you a screenshot"); it reads it once with bridge__clipboard, within 10 minutes.`);
@@ -269,6 +283,68 @@ async function paste(ctx: Context, dir?: string): Promise<void> {
     writeFileSync(file, data);
     console.log(file);
   }
+}
+
+// ── ⌃V in a terminal on another machine (0b clip shims) ─────────────
+
+/**
+ * Claude Code on Linux pastes an image with ⌃V by asking `xclip` (or `wl-paste`) for the
+ * clipboard's image. These stand-ins answer with the newest image copied on the Mac (`0b clip
+ * sync`), left in place so it can be pasted again; anything else goes to the real tool.
+ */
+function installPasteShims(ctx: Context, on: boolean): void {
+  const dir = join(ctx.storeDir, "bin");
+  for (const name of ["xclip", "wl-paste"]) {
+    const f = join(dir, name);
+    if (!on) {
+      rmSync(f, { force: true });
+      continue;
+    }
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(f, `#!/bin/sh\n# 0bridge: ⌃V pastes the image you last copied on your Mac (0b clip sync); the rest goes to the real ${name}.\nexec "${process.execPath}" "${process.argv[1]}" clip shim ${name} -- "$@"\n`);
+    chmodSync(f, 0o755);
+  }
+  if (!on) return console.log(`${c.green("✓")} removed the xclip and wl-paste stand-ins`);
+  const onPath = (process.env.PATH ?? "").split(delimiter)[0] === dir;
+  console.log(`${c.green("✓")} ⌃V in Claude Code on this machine now pastes the image you last copied on your Mac (with ${c.cyan("0b clip sync on")} there).`);
+  if (!onPath) console.log(`Put ${dir} first in your PATH (in ~/.zshrc or ~/.bashrc), then start Claude Code again:\n  ${c.cyan(`export PATH="${dir}:$PATH"`)}`);
+}
+
+/** One xclip / wl-paste call: images from 0bridge; everything else (and no image waiting) to the real tool. */
+async function pasteShim(ctx: Context, tool: "xclip" | "wl-paste", argv: string[]): Promise<void> {
+  const real = realBin(tool);
+  const passThrough = (): never => {
+    if (!real) process.exit(1);
+    const r = spawnSync(real, argv, { stdio: "inherit" });
+    process.exit(r.status ?? 1);
+  };
+  const value = (flag: string[]) => {
+    const i = argv.findIndex((a) => flag.includes(a));
+    return i >= 0 ? argv[i + 1] : undefined;
+  };
+  let wantsList = false;
+  let wantsType: string | undefined;
+  if (tool === "xclip") {
+    const sel = value(["-selection", "-sel"]);
+    if (!argv.includes("-o") && !argv.includes("-out")) passThrough();
+    if (!sel || !"clipboard".startsWith(sel)) passThrough();
+    const t = value(["-t", "-target"]);
+    wantsList = t === "TARGETS";
+    wantsType = t;
+  } else {
+    wantsList = argv.includes("-l") || argv.includes("--list-types");
+    wantsType = value(["-t", "--type"]);
+  }
+  if (!wantsList && !wantsType?.startsWith("image/")) passThrough();
+  const { client } = cloudClient(ctx);
+  const img = await client.latestImage().catch(() => null);
+  if (!img) passThrough();
+  if (wantsList) {
+    process.stdout.write(`${img!.mime}\n`);
+    return;
+  }
+  if (wantsType !== img!.mime) passThrough();
+  process.stdout.write(Buffer.from(img!.data, "base64"));
 }
 
 // ── Answering agents' requests (0b clip listen) ─────────────

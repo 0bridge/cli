@@ -11,7 +11,8 @@
     "./onboarding": "./src/onboarding.ts",
     "./vault-crypto": "./src/vault-crypto.ts",
     "./mcp-registry": "./src/mcp-registry.ts",
-    "./scope": "./src/scope.ts"
+    "./scope": "./src/scope.ts",
+    "./notes": "./src/notes.ts"
   },
   "dependencies": {
     "smol-toml": "^1.3.0",

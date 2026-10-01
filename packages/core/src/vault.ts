@@ -74,6 +74,8 @@ export const noteAt = (i: Pick<VaultItem, "scope" | "env" | "name">) => ({ scope
 
 export const sealNote = (key: Uint8Array, at: Pick<VaultItem, "scope" | "env" | "name">, text: string) => sealValue(key, noteAt(at), text);
 
+export { maskNote, noteHasCredential } from "./notes.ts";
+
 /** The note in plain text, or null when there's none (or it can't be opened with this key). */
 export function openNote(key: Uint8Array, item: Pick<VaultItem, "scope" | "env" | "name" | "note">): string | null {
   if (!item.note) return null;

@@ -324,6 +324,15 @@ export class CloudClient {
   clearClips() {
     return this.req<{ deleted: number }>("/clip", { method: "DELETE" });
   }
+  /** The newest image waiting, left in place; null when there's none. */
+  async latestImage() {
+    try {
+      return await this.req<{ id: string; name: string; mime: string; size: number; at: number; data: string }>("/clip/image");
+    } catch (e) {
+      if (e instanceof CloudError && e.status === 404) return null;
+      throw e;
+    }
+  }
   /** Take what's waiting (each item once, like an agent's read), with its data in base64. */
   takeClips() {
     return this.req<{ id: string; name: string; mime: string; size: number; at: number; from?: string; data: string }[]>("/clip/take", { method: "POST" });

@@ -19,6 +19,8 @@ import {
   guessKind,
   itemsFor,
   loadVaultCache,
+  maskNote,
+  noteHasCredential,
   openNote,
   openSecretStore,
   openValue,
@@ -297,6 +299,7 @@ export async function secretCommand(ctx: Context, args: string[], opts: SecretOp
       if (!name) fail("usage: 0b secret set <NAME> [--variable] [--env dev|prod] [--global] [--file <path>]   (the value is asked for, read from stdin, or from --file for several lines)");
       if (value !== undefined && !opts.variable) fail("don't put secret values in the command line (shell history, agent transcripts). Run it without the value to be asked for it, or pipe it in. Plain settings can: 0b secret set PORT 3000 --variable");
       const at = { ...target(opts), name };
+      if (opts.note && noteHasCredential(opts.note)) fail("that note looks like it holds a key or token. Notes are shown in lists, which agents read: describe the value in words.");
       const v = (await openVault(ctx, { create: true }))!;
       // --file: a value of several lines (a PEM private key, a JSON service account), read as is.
       const val = value ?? (opts.file ? readFileSync(resolve(opts.file), "utf8").replace(/\r?\n$/, "") : await askValue(name));
@@ -373,6 +376,7 @@ export async function secretCommand(ctx: Context, args: string[], opts: SecretOp
       const at = { ...target(opts), name };
       const text = args.slice(2).join(" ").trim();
       if (text.length > 1500) fail("notes are up to 1500 characters");
+      if (noteHasCredential(text)) fail("that note looks like it holds a key or token. Notes are shown in lists, which agents read: keep the value in the secret itself and describe it in words.");
       const v = (await openVault(ctx)) ?? fail("no vault yet");
       await patch(ctx, at, { note: text ? sealNote(v.key, at, text) : null });
       console.log(text ? `${c.green("✓")} noted ${name}: ${c.dim(text)}` : `${c.green("✓")} cleared ${name}'s note`);
@@ -423,7 +427,8 @@ async function list(ctx: Context) {
       };
       const notes = canOpen ? items.map((i) => [i, openNote(key!, i)] as const).filter(([, n]) => n) : [];
       console.log(`    ${c.dim(env.padEnd(6))} ${items.map(label).join(", ")}${PROTECTED_ENVS.has(env) ? c.dim("  (needs your approval to use)") : ""}`);
-      for (const [i, n] of notes) console.log(`           ${c.dim(`${i.name}: ${n!.replace(/\s+/g, " ")}`)}`);
+      // Masked even here: a key that got into a note earlier mustn't reach an agent reading the list.
+      for (const [i, n] of notes) console.log(`           ${c.dim(`${i.name}: ${maskNote(n!.replace(/\s+/g, " "))}`)}`);
     }
   }
   if (!key) console.log(c.yellow(`\nThis machine can't open them yet: run ${c.cyan("0b vault unlock")} and approve it in your browser.`));

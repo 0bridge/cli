@@ -117,6 +117,7 @@ ${c.bold("Usage")}
   0b clip listen on|off        Let agents ask this Mac for its clipboard: a dialog asks you each time
   0b clip sync on|off          On a Mac: images you copy (screenshots, copied images) go to your agents as you copy them
   0b clip paste [dir]          Save what's waiting here (over SSH too) and print the paths
+  0b clip shims [off]          On a Linux server: ⌃V in Claude Code pastes the image you last copied on your Mac
   0b background [on|off]       Run (or schedule every 30 min) the history and personal file sync
   0b tool enable|disable <tool>
   0b update [--check]          Install the newest 0b (and restart its background jobs); --check only looks

@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
 import {
   CloudError,
   DEFAULT_ENV,
@@ -35,6 +35,7 @@ import {
   writeAtomic,
   type CloudClient,
   type Context,
+  type GrantAsk,
   type VaultItem,
   type VaultKind,
   type VaultState,
@@ -60,6 +61,41 @@ export function scopeHere(cwd = process.cwd()): string | null {
   if (!inRepo) return null;
   const r = repoOf(cwd);
   return r.remote ?? r.path;
+}
+
+/** The agent this runs under, from the variables each sets in the shells it starts; null at a person's own terminal. */
+export function agentHere(env: NodeJS.ProcessEnv = process.env): string | null {
+  if (env.CLAUDECODE === "1") return "claude-code";
+  if (env.CODEX_SANDBOX || env.CODEX_SANDBOX_NETWORK_DISABLED || env.CODEX_THREAD_ID) return "codex";
+  if (env.CURSOR_AGENT === "1") return "cursor";
+  if (env.GEMINI_CLI === "1") return "gemini";
+  return null;
+}
+
+/** The last two segments of a path, as the session board keeps them (no home folder). */
+const lastTwo = (p: string) => p.split(/[\\/]+/).filter(Boolean).slice(-2).join("/");
+
+/**
+ * What the approval page shows about a prod request besides the command: the agent's own sentence
+ * (`--why`), which agent and checkout it runs in, so the dashboard can find its session, and the
+ * names of the values it will read.
+ */
+export function grantAsk(cwd: string, why: string | undefined, names: string[], env: NodeJS.ProcessEnv = process.env): GrantAsk {
+  const git = (...args: string[]) => spawnSync("git", args, { cwd, encoding: "utf8" }).stdout?.trim() || undefined;
+  const top = git("rev-parse", "--show-toplevel");
+  // Empty on a detached HEAD; works before the first commit too.
+  const branch = top ? git("branch", "--show-current") : undefined;
+  return {
+    ...(why?.trim() ? { why: why.trim().slice(0, 300) } : {}),
+    context: {
+      ...(agentHere(env) ? { agent: agentHere(env)! } : {}),
+      ...(top ? { repo: basename(top) } : {}),
+      ...(branch ? { branch } : {}),
+      cwd: lastTwo(cwd),
+      ...(top ? { root: lastTwo(top) } : {}),
+      names: [...new Set(names)].slice(0, 50),
+    },
+  };
 }
 
 const scopeLabel = (scope: string) => (scope === GLOBAL_SCOPE ? "global" : scope);
@@ -143,8 +179,8 @@ function showRecoveryKey(ctx: Context, key: Uint8Array, why: string): void {
  * approval happens in the browser with a passkey, so nothing on this machine can give it.
  * Messages go to stderr: a command's own output stays clean.
  */
-async function requestApproval(client: CloudClient, scope: string, env: string, reason?: string): Promise<void> {
-  const g = await client.requestGrant(scope, env, reason);
+async function requestApproval(client: CloudClient, scope: string, env: string, reason?: string, ask?: GrantAsk): Promise<void> {
+  const g = await client.requestGrant(scope, env, reason, ask);
   console.error(`${c.yellow("●")} ${c.bold(env)} secrets need your approval. Code ${c.bold(g.code)}. Approve in your browser:\n  ${c.cyan(g.url)}`);
   openBrowser(g.url);
   for (;;) {
@@ -698,7 +734,7 @@ async function approvePairings(ctx: Context): Promise<void> {
  * Returns nothing (with a note on stderr) when there's no vault or this machine can't open it,
  * so commands still run.
  */
-export async function vaultEnv(ctx: Context, cwd: string, env: string, reason?: string): Promise<{ env: Record<string, string>; hidden: string[] }> {
+export async function vaultEnv(ctx: Context, cwd: string, env: string, reason?: string, why?: string): Promise<{ env: Record<string, string>; hidden: string[] }> {
   const none = { env: {}, hidden: [] };
   let client: CloudClient;
   try {
@@ -730,7 +766,9 @@ export async function vaultEnv(ctx: Context, cwd: string, env: string, reason?: 
   }
   if (items.some((i) => i.locked)) {
     try {
-      await requestApproval(client, scope ?? GLOBAL_SCOPE, env, reason);
+      const ask = grantAsk(cwd, why, items.filter((i) => i.locked).map((i) => i.name));
+      if (!ask.why && ask.context?.agent) console.error(c.dim(`0b: agents, add --why "<what this is for>" so the approval page says why`));
+      await requestApproval(client, scope ?? GLOBAL_SCOPE, env, reason, ask);
       // Held in memory for this command only; the offline copy never keeps protected values.
       state = await client.vault();
     } catch (e) {

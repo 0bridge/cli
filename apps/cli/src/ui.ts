@@ -121,10 +121,10 @@ export function printPlan(ctx: Context, plan: Plan, secrets: string[], showDiff:
   for (const ch of plan.changes) {
     if (ch.kind === "skill") {
       const sym = ch.action === "remove" ? c.red("-") : ch.action === "install" ? c.green("+") : c.yellow("~");
-      console.log(`${sym} ${labels[ch.tool].label}: ${ch.action} skill ${ch.name} ${c.dim(tilde(ctx, ch.path))}`);
+      console.log(`${sym} ${ch.label ?? labels[ch.tool].label}: ${ch.action} skill ${ch.name} ${c.dim(tilde(ctx, ch.path))}`);
       continue;
     }
-    console.log(`${c.yellow("~")} ${labels[ch.tool].label}: ${ch.summary.join(", ")} ${c.dim(tilde(ctx, ch.path))}`);
+    console.log(`${c.yellow("~")} ${ch.label ?? labels[ch.tool].label}: ${ch.summary.join(", ")} ${c.dim(tilde(ctx, ch.path))}`);
     if (!showDiff) continue;
     const patch = createTwoFilesPatch("before", "after", ch.viewBefore, ch.viewAfter, "", "", { context: 2 });
     for (const line of mask(patch, secrets).split("\n").slice(4)) {
@@ -141,15 +141,18 @@ export function printWarnings(ctx: Context, plan: Plan) {
   for (const m of plan.missing) console.log(`${c.red("✗")} unresolved ${m} — set it with ${c.cyan(`0b secret set ${m.replace(/^secret:/, "")}`)}`);
 }
 
-/** One line per tool: what a sync would change. */
+/** One line per tool (and per other copy of it: another account, a checkout): what a sync would change. */
 export function planSummary(ctx: Context, plan: Plan): string[] {
   const labels = getAdapters(ctx);
-  const by = new Map<ToolId, { mcp: string[]; skills: string[]; instructions: boolean }>();
-  const get = (t: ToolId) => by.get(t) ?? (by.set(t, { mcp: [], skills: [], instructions: false }), by.get(t)!);
+  const by = new Map<string, { mcp: string[]; skills: string[]; instructions: boolean }>();
+  const get = (ch: { tool: ToolId; label?: string }) => {
+    const t = ch.label ?? labels[ch.tool].label;
+    return by.get(t) ?? (by.set(t, { mcp: [], skills: [], instructions: false }), by.get(t)!);
+  };
   for (const ch of plan.changes) {
-    if (ch.kind === "skill") get(ch.tool).skills.push(`${ch.action === "remove" ? "-" : ch.action === "install" ? "+" : "~"}${ch.name}`);
-    else if (ch.what === "mcp") get(ch.tool).mcp.push(...ch.summary);
-    else get(ch.tool).instructions = true;
+    if (ch.kind === "skill") get(ch).skills.push(`${ch.action === "remove" ? "-" : ch.action === "install" ? "+" : "~"}${ch.name}`);
+    else if (ch.what === "mcp") get(ch).mcp.push(...ch.summary);
+    else get(ch).instructions = true;
   }
   const count = (xs: string[], p: string) => xs.filter((x) => x.startsWith(p)).length;
   return [...by].map(([t, v]) => {
@@ -163,7 +166,7 @@ export function planSummary(ctx: Context, plan: Plan): string[] {
       count(v.skills, "-") && c.red(`-${count(v.skills, "-")} ${skills(count(v.skills, "-"))}`),
       v.instructions && c.cyan("instructions"),
     ].filter(Boolean);
-    return `${labels[t].label.padEnd(12)} ${parts.join("  ")}`;
+    return `${t.padEnd(12)} ${parts.join("  ")}`;
   });
 }
 

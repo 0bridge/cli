@@ -1,6 +1,7 @@
+import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { Context, Manifest, McpServer, State, ToolId } from "./types.ts";
+import type { Context, Manifest, McpServer, ProjectScope, State, ToolId } from "./types.ts";
 import { TOOL_IDS } from "./types.ts";
 import { readJson, readText, writeAtomic } from "./util.ts";
 import { resolveRefs, type SecretStore } from "./secrets.ts";
@@ -15,8 +16,21 @@ export const paths = (ctx: Context) => ({
   state: join(ctx.storeDir, "state.json"),
   skills: join(ctx.storeDir, "skills"),
   instructions: join(ctx.storeDir, "AGENTS.md"),
+  /** Your teams' instructions, one `<team>.md` each, as `0b context` keeps them (M8-3); their admins change them. */
+  teams: join(ctx.storeDir, "teams"),
   backups: join(ctx.storeDir, "backups"),
 });
+
+/** Where a repo's own skills are kept (`0b skill add --project`), one folder per repo. */
+export const projectSkillsDir = (ctx: Context, repo: string) => join(ctx.storeDir, "project-skills", repo.replace(/[^\w.-]+/g, "_"));
+
+/** A repo's project scope in the manifest, made empty when `create` and it has none. */
+export function projectScope(m: Manifest, repo: string, create: true): ProjectScope;
+export function projectScope(m: Manifest, repo: string, create?: boolean): ProjectScope | null;
+export function projectScope(m: Manifest, repo: string, create = false): ProjectScope | null {
+  if (!m.projects?.[repo] && !create) return null;
+  return ((m.projects ??= {})[repo] ??= { mcpServers: {}, skills: {} });
+}
 
 export function emptyManifest(): Manifest {
   return {
@@ -63,6 +77,23 @@ export function readInstructions(ctx: Context): string {
   return readText(paths(ctx).instructions) ?? "";
 }
 
+/** Your teams' instructions, each its own section, by team. */
+export function readTeamInstructions(ctx: Context): string {
+  const dir = paths(ctx).teams;
+  if (!existsSync(dir)) return "";
+  return readdirSync(dir)
+    .filter((f) => f.endsWith(".md"))
+    .sort()
+    .map((f) => (readText(join(dir, f)) ?? "").trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+/** What every tool's instructions block holds: yours (AGENTS.md), then your teams'. */
+export function toolInstructions(ctx: Context): string {
+  return [readInstructions(ctx).trim(), readTeamInstructions(ctx)].filter(Boolean).join("\n\n");
+}
+
 export function toolEnabled(m: Manifest, tool: ToolId): boolean {
   return m.tools[tool]?.enabled !== false;
 }
@@ -85,7 +116,7 @@ export function resolveServer(s: McpServer, store: SecretStore, missing?: Set<st
   return out;
 }
 
-/** All secret values referenced by the manifest, for masking in terminal output. */
+/** All secret values referenced by the manifest (its projects' servers too), for masking in terminal output. */
 export function secretValues(m: Manifest, store: SecretStore): string[] {
   const out = new Set<string>();
   const scan = (v?: string) => {
@@ -94,7 +125,7 @@ export function secretValues(m: Manifest, store: SecretStore): string[] {
       if (val && val.length >= 6) out.add(val);
     }
   };
-  for (const s of Object.values(m.mcpServers)) {
+  for (const s of [...Object.values(m.mcpServers), ...Object.values(m.projects ?? {}).flatMap((p) => Object.values(p.mcpServers))]) {
     [s.command, s.url, s.cwd, ...(s.args ?? []), ...Object.values(s.env ?? {}), ...Object.values(s.headers ?? {})].forEach(scan);
   }
   return [...out];

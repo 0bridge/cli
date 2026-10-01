@@ -22,7 +22,8 @@ import {
   type UsageDelta,
 } from "@0bridge/session";
 import { redact } from "@0bridge/session/redact";
-import { extraClaudeDirs } from "./adapters.ts";
+import { extraClaudeDirs, extraCodexDirs } from "./adapters.ts";
+import { agentProfileName } from "./agent-profiles.ts";
 import { repoOf } from "./profiles.ts";
 import { readJson, writeAtomic } from "./util.ts";
 import type { Context } from "./types.ts";
@@ -288,18 +289,24 @@ interface FileSource {
 
 const UUID = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/;
 
-/** ~/.claude, then other Claude config folders (a second account), each tagged with its name. */
+/**
+ * ~/.claude, then other Claude config folders (a second account: `0b use` profiles, ~/.claude-*,
+ * CLAUDE_CONFIG_DIR), each tagged with its profile name.
+ */
 const claudeRoots = (ctx: Context): Root[] => [
   { dir: join(ctx.home, ".claude", "projects") },
-  ...extraClaudeDirs(ctx).map((d) => ({ dir: join(d, "projects"), account: basename(d).replace(/^\.claude-/, "") })),
+  ...extraClaudeDirs(ctx).map((d) => ({ dir: join(d, "projects"), account: agentProfileName(ctx, "claude", d) })),
 ];
 
-/** ~/.codex, and CODEX_HOME when it points somewhere else (another account). */
+/**
+ * ~/.codex, then other Codex homes (`0b use` profiles, ~/.codex-*), and CODEX_HOME when it points
+ * somewhere else (another account, or a wrapper's own home), each tagged with its name.
+ */
 function codexRoots(ctx: Context): Root[] {
-  const roots: Root[] = [{ dir: join(ctx.home, ".codex", "sessions") }];
+  const dirs = new Set(extraCodexDirs(ctx));
   const env = process.env.CODEX_HOME;
-  if (env && resolve(env) !== resolve(ctx.home, ".codex")) roots.push({ dir: join(env, "sessions"), account: basename(resolve(env)).replace(/^\.codex-?/, "") || basename(resolve(env)) });
-  return roots;
+  if (env && resolve(env) !== resolve(ctx.home, ".codex")) dirs.add(resolve(env));
+  return [{ dir: join(ctx.home, ".codex", "sessions") }, ...[...dirs].map((d) => ({ dir: join(d, "sessions"), account: agentProfileName(ctx, "codex", d) }))];
 }
 
 /** Gemini CLI writes the project's folder next to its chats (newer versions); older ones only hash it. */

@@ -3,7 +3,7 @@ import { existsSync, lstatSync, realpathSync, mkdirSync, readFileSync, readlinkS
 import { hostname } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { isInside, openValue, readJson, repoOf, sealValue, writeAtomic, type CloudClient, type Context, type RemoteFile } from "@0bridge/core";
+import { excludeFromGit, isInside, openValue, readJson, repoOf, sealValue, writeAtomic, type CloudClient, type Context, type RemoteFile } from "@0bridge/core";
 import { ensureBackground } from "./background.ts";
 import { openVault } from "./vault.ts";
 import { accountForRepo } from "./links.ts";
@@ -131,18 +131,7 @@ const at = (repo: string, path: string) => ({ scope: `files:${repo}`, env: path,
 
 /** Keep a personal file out of commits in this clone without touching the shared .gitignore. */
 export function ignoreLocally(root: string, file: string): boolean {
-  const path = jsonKey(file)?.file ?? file; // a JSON key: the file it's in
-  if (spawnSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: root }).status !== 0) return true; // the home folder: no git to keep it out of
-  const tracked = spawnSync("git", ["ls-files", "--error-unmatch", path], { cwd: root }).status === 0;
-  if (tracked) return false;
-  const ignored = spawnSync("git", ["check-ignore", "-q", path], { cwd: root }).status === 0;
-  if (!ignored) {
-    const exclude = spawnSync("git", ["rev-parse", "--git-path", "info/exclude"], { cwd: root, encoding: "utf8" }).stdout.trim();
-    const file = resolve(root, exclude);
-    mkdirSync(dirname(file), { recursive: true });
-    appendFileSync(file, `${existsSync(file) && !readFileSync(file, "utf8").endsWith("\n") ? "\n" : ""}/${path}\n`);
-  }
-  return true;
+  return excludeFromGit(root, jsonKey(file)?.file ?? file); // a JSON key: the file it's in
 }
 
 interface Result {

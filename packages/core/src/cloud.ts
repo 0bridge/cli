@@ -205,6 +205,26 @@ export interface CloudConnection {
   keys?: string[];
   /** An API connected from its OpenAPI document. */
   openapi?: { url: string; ops: number; write: boolean };
+  // What the user decided about it (missing from older servers): agents get `toolsOn` of its `tools`.
+  toolsOn?: number;
+  /** What it's for, in the user's words; agents read it. */
+  description?: string | null;
+  tags?: string[];
+  /** Agents get only the tools that read. */
+  readOnly?: boolean;
+  /** Tool names turned off. */
+  off?: string[];
+  /** The account it's signed into upstream (a workspace, an email), when the service said. */
+  account?: string | null;
+}
+
+/** One of a connection's tools; `off` says why agents don't get it. */
+export interface CloudConnectionTool {
+  name: string;
+  title?: string;
+  description?: string;
+  readOnly: boolean;
+  off: "off" | "read-only" | null;
 }
 
 /** How to connect a service (the gateway's discover.ts): polished, MCP, OpenAPI. */
@@ -279,6 +299,12 @@ async function retrying(send: () => Promise<Response>, idempotent: boolean, serv
       await new Promise((r) => setTimeout(r, attempt * 700));
     }
   }
+}
+
+/** What a prod request says about itself on the approval page: the agent's sentence, and where it runs (names, never values). */
+export interface GrantAsk {
+  why?: string;
+  context?: { agent?: string; repo?: string; branch?: string; cwd?: string; root?: string; names?: string[] };
 }
 
 export class CloudClient {
@@ -410,14 +436,19 @@ export class CloudClient {
   }
   /** A name clash comes back as `{ state: "conflict", suggestion }`, never replacing the existing connection. */
   /** `hosted`: sign in with 0bridge's own app for the service (Slack), even before it's the default. */
-  connect(service: string, label: string | undefined, url: string, headers?: Record<string, string>, oauthClient?: OAuthClient, hosted?: boolean) {
-    return this.req<ConnectResult>("/connections", { method: "POST", body: JSON.stringify({ service, label, url, headers, oauthClient, ...(hosted ? { hosted: true } : {}) }) }, [409, 422]);
+  /** `readOnly`: agents get only its tools that read, from the start. */
+  connect(service: string, label: string | undefined, url: string, headers?: Record<string, string>, oauthClient?: OAuthClient, hosted?: boolean, readOnly?: boolean) {
+    return this.req<ConnectResult>(
+      "/connections",
+      { method: "POST", body: JSON.stringify({ service, label, url, headers, oauthClient, ...(hosted ? { hosted: true } : {}), ...(readOnly ? { readOnly: true } : {}) }) },
+      [409, 422],
+    );
   }
   /**
    * A connection of kind "api": a known connector (`preset`, e.g. google-calendar), or any HTTP API by
    * base URL, auth style and key. The key goes to the gateway (sealed there), never to agents.
    */
-  connectApi(body: { service?: string; label?: string; preset?: string; spec?: string; baseUrl?: string; auth?: { type: "bearer" | "basic" | "header" | "query"; name?: string }; key?: string; allowWrite?: boolean }) {
+  connectApi(body: { service?: string; label?: string; preset?: string; spec?: string; baseUrl?: string; auth?: { type: "bearer" | "basic" | "header" | "query"; name?: string }; key?: string; allowWrite?: boolean; readOnly?: boolean }) {
     return this.req<ConnectResult>("/connections", { method: "POST", body: JSON.stringify({ kind: "api", ...body }) }, [409]);
   }
   /** How to connect a service from its name or an address. */
@@ -444,6 +475,20 @@ export class CloudClient {
       [409],
     );
   }
+  /**
+   * What agents may do through a connection and read about it: its description and tags (null
+   * clears), read-only, tools turned on (true) or off (false) by name. What isn't given stays.
+   */
+  updateConnection(id: string, patch: { description?: string | null; tags?: string[] | null; readOnly?: boolean; tools?: Record<string, boolean> }) {
+    return this.req<{ display: string; description: string | null; tags: string[]; readOnly: boolean; off: string[] }>(`/connections/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+  }
+  /** A connection's tools, each with whether agents get it. */
+  connectionTools(id: string) {
+    return this.req<{ display: string; readOnly: boolean; tools: CloudConnectionTool[] }>(`/connections/${encodeURIComponent(id)}/tools`);
+  }
   disconnect(id: string) {
     return this.req<void>(`/connections/${encodeURIComponent(id)}`, { method: "DELETE" });
   }
@@ -467,8 +512,8 @@ export class CloudClient {
     return this.req<{ error?: string } | undefined>("/vault/items", { method: "PATCH", body: JSON.stringify(item) }, [404]);
   }
   /** Ask the user (in the browser) to let this device use a protected env for a while. */
-  requestGrant(scope: string, env: string, reason?: string) {
-    return this.req<{ id: string; code: string; url: string; expiresAt: number }>("/vault/grants", { method: "POST", body: JSON.stringify({ scope, env, reason }) });
+  requestGrant(scope: string, env: string, reason?: string, ask?: GrantAsk) {
+    return this.req<{ id: string; code: string; url: string; expiresAt: number }>("/vault/grants", { method: "POST", body: JSON.stringify({ scope, env, reason, ...ask }) });
   }
   grant(id: string) {
     return this.req<{ status: "pending" | "approved" | "denied" | "expired"; until: number | null }>(`/vault/grants/${encodeURIComponent(id)}`);

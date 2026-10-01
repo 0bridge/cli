@@ -13,11 +13,12 @@ export function hasBlock(text: string): boolean {
 /**
  * Put `canonical` into the managed block of an instructions file, keeping the user's own text.
  * If the file's entire content already equals canonical (first import), it becomes the block.
- * Empty canonical removes the block.
+ * Empty canonical removes the block. `begin`: the block's first line, which says where its text
+ * comes from (a repo's blocks come from its own files, not ~/.0bridge/AGENTS.md).
  */
-export function applyBlock(current: string, canonical: string): string {
+export function applyBlock(current: string, canonical: string, begin = BLOCK_BEGIN): string {
   const body = canonical.trim();
-  const block = body ? `${BLOCK_BEGIN}\n${body}\n${BLOCK_END}\n` : "";
+  const block = body ? `${begin}\n${body}\n${BLOCK_END}\n` : "";
   if (BLOCK.test(current)) {
     const out = current.replace(BLOCK, block);
     return block ? out : out.replace(/\n{2,}$/, "\n");

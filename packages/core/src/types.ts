@@ -31,12 +31,28 @@ export interface Manifest {
   mcpServers: Record<string, McpServer>;
   skills: Record<string, SkillEntry>;
   instructions: { enabled: boolean; targets?: ToolId[] };
+  /** Per repo (its remote, `github.com/owner/name`, or its path): what its checkouts get on top. */
+  projects?: Record<string, ProjectScope>;
+}
+
+/**
+ * A repo's own MCP servers and skills (`0b mcp add --project`, `0b skill add --project`,
+ * `0b project import`), written into its checkouts' project-scope files, and whether every tool
+ * there is made to read the repo's instructions (AGENTS.md, CLAUDE.md).
+ */
+export interface ProjectScope {
+  mcpServers: Record<string, McpServer>;
+  skills: Record<string, SkillEntry>;
+  /** Default true. */
+  instructions?: boolean;
 }
 
 /** What 0bridge has written into each tool, so it only ever removes things it owns. */
 export interface State {
   /** `hooks`: the hook entries (`0b hook …` commands) 0bridge added to the tool's settings. */
   managed: Partial<Record<ToolId, { mcp: string[]; skills: string[]; hooks?: string[] }>>;
+  /** Checkouts that get their repo's project scope (by path), and what 0bridge wrote into each. */
+  projects?: Record<string, { repo: string; managed: Partial<Record<ToolId, { mcp: string[]; skills: string[] }>> }>;
 }
 
 export interface Context {

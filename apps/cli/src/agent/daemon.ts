@@ -14,7 +14,7 @@ import type { AgentAdapter, AgentEvent, Run } from "./adapters/types.ts";
 import { ipcPath, serveIpc } from "./ipc.ts";
 import { logEvent, logMeta, readTask } from "./log.ts";
 import { PERM_WAIT_MS, removeTaskFile, writeTaskFile } from "./perm-mcp.ts";
-import { AGENT_IDS, clampMode, denyRules, loadAgentConfig, profileEnv, repoFor, saveAgentConfig, type AgentConfig, type AgentId, type Mode, type RepoPolicy } from "./policy.ts";
+import { AGENT_IDS, clampMode, denyRules, loadAgentConfig, profileEnv, repoFor, saveAgentConfig, withUseProfiles, type AgentConfig, type AgentId, type Mode, type RepoPolicy } from "./policy.ts";
 import { installService } from "../service.ts";
 import { vaultValues } from "../vault.ts";
 import { connectLoop, type Conn } from "./ws.ts";
@@ -115,7 +115,7 @@ export class Daemon {
   }
 
   config(): AgentConfig {
-    return loadAgentConfig(this.ctx);
+    return withUseProfiles(this.ctx, loadAgentConfig(this.ctx));
   }
 
   async hello(): Promise<HelloFrame> {

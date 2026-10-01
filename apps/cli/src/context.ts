@@ -25,6 +25,7 @@ import {
   type SyncAction,
 } from "@0bridge/core";
 import { cloudClient } from "./cloud.ts";
+import { reportTeams, syncTeams, teamSkillNames } from "./team.ts";
 import { c, tilde } from "./ui.ts";
 
 /**
@@ -32,7 +33,8 @@ import { c, tilde } from "./ui.ts";
  * every AI app (Claude, ChatGPT, the coding agents) reads the same ones, and memory any of them can
  * search. The local copies are ~/.0bridge/PROFILE.md, ~/.0bridge/AGENTS.md (what `0b apply` puts
  * in each tool) and ~/.0bridge/skills/*. Like personal files, a sync never overwrites a copy
- * changed on both sides: this machine's stays, and 0bridge's is written next to it.
+ * changed on both sides: this machine's stays, and 0bridge's is written next to it. Your teams'
+ * skills and instructions (team.ts) come down with a pull or a sync, and are never sent back as yours.
  */
 
 export interface ContextOptions {
@@ -122,8 +124,10 @@ export async function planContext(ctx: Context, client: CloudClient, userId: str
   doc("instructions", tilde(ctx, p.instructions), p.instructions, remote.instructions);
   const remoteSkills = new Map(remote.skills.map((s) => [s.name, s]));
   const names = new Set([...listSkills(p.skills), ...remoteSkills.keys(), ...Object.keys(state.skills)]);
+  // A team's skills are its admins' (team.ts): copied here, never sent back as yours.
+  const team = teamSkillNames(ctx);
   for (const name of [...names].sort()) {
-    if (BUILTIN_SKILLS.has(name)) continue;
+    if (BUILTIN_SKILLS.has(name) || team.has(name)) continue;
     const local = readSkill(join(p.skills, name), name)?.hash ?? null;
     const r = remoteSkills.get(name)?.hash ?? null;
     const base = state.skills[name] ?? null;
@@ -352,7 +356,10 @@ export async function contextCommand(ctx: Context, args: string[], opts: Context
     case "push":
     case "pull":
     case "sync": {
+      // The teams' first, so a team skill that just arrived isn't taken for one of yours.
+      const team = sub === "push" ? null : await syncTeams(ctx, client, cfg.userId);
       const plan = await planContext(ctx, client, cfg.userId);
+      if (team && reportTeams(team, { quiet: opts.quiet })) console.log(c.dim(`Your team's skills and instructions are in your AI tools now; run ${c.cyan("0b apply")} if one doesn't have them yet.`));
       report(await run(ctx, client, cfg.userId, plan, sub, opts.force), { quiet: opts.quiet, mode: sub });
       return;
     }
@@ -406,7 +413,8 @@ export async function memoryCommand(ctx: Context, args: string[], opts: ContextO
 
 /**
  * Pull then push the profile, instructions and skills when either side changed (the background job
- * runs it). Only once this account has used `0b context` here: nothing goes to 0bridge unasked.
+ * runs it). Only once this account has used `0b context` here: nothing goes to 0bridge unasked. Your
+ * teams' skills and instructions only come down, so they come even before then.
  */
 export async function syncContext(ctx: Context, opts: { quiet?: boolean }): Promise<void> {
   let account;
@@ -416,6 +424,12 @@ export async function syncContext(ctx: Context, opts: { quiet?: boolean }): Prom
     return; // not signed in
   }
   const { cfg, client } = account;
+  try {
+    reportTeams(await syncTeams(ctx, client, cfg.userId), { quiet: opts.quiet });
+  } catch (e) {
+    if (!opts.quiet) throw e;
+    if (!(e instanceof CloudError && e.status === 0)) console.error(`team sync: ${e instanceof Error ? e.message : String(e)}`);
+  }
   if (!loadStates(ctx)[cfg.userId]) return;
   try {
     const plan = await planContext(ctx, client, cfg.userId);

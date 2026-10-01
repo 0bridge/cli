@@ -8,6 +8,7 @@ import {
   DEFAULT_ENV,
   Masker,
   PROFILE_NAME,
+  agentProfileEnv,
   loadProfiles,
   profileDir,
   profileEnv,
@@ -22,7 +23,7 @@ import {
 import { c, canOpenBrowser } from "./ui.ts";
 import { vaultEnv } from "./vault.ts";
 
-const binDir = (ctx: Context) => join(ctx.storeDir, "bin");
+export const binDir = (ctx: Context) => join(ctx.storeDir, "bin");
 
 function fail(msg: string): never {
   console.error(c.red(`error: ${msg}`));
@@ -270,25 +271,31 @@ export function spawnTarget(cmd: string, args: string[], PATH: string, platform:
 export async function execCommand(ctx: Context, argv: string[]): Promise<never> {
   let shim: string | undefined;
   let envName = DEFAULT_ENV;
+  // What it's for, in the agent's words, for the prod approval page (or ZEROBRIDGE_WHY).
+  let why = process.env.ZEROBRIDGE_WHY;
   for (;;) {
     if (argv[0] === "--shim") shim = argv[1];
     else if (argv[0] === "--env") envName = argv[1] ?? fail("--env needs a name (dev, prod, …)");
     else if (argv[0]?.startsWith("--env=")) envName = argv[0].slice(6);
+    else if (argv[0] === "--why") why = argv[1] ?? fail('--why needs a sentence: what the command is for');
+    else if (argv[0]?.startsWith("--why=")) why = argv[0].slice(6);
     else break;
-    argv = argv.slice(2 - Number(argv[0]?.startsWith("--env=")));
+    argv = argv.slice(2 - Number(/^--(env|why)=/.test(argv[0] ?? "")));
   }
   if (argv[0] === "--") argv = argv.slice(1);
   const [cmd, ...args] = shim ? [shim, ...argv] : argv;
-  if (!cmd) fail("usage: 0b exec [--env dev|prod] -- <command> [args…]");
+  if (!cmd) fail('usage: 0b exec [--env dev|prod] [--why "<what it\'s for>"] -- <command> [args…]');
   const { env } = profileEnv(ctx, process.cwd());
   // Shims only swap CLI logins; they don't need the vault (and run on every wrangler call).
   // The approval page shows what's asking: the command and its first argument, never more (it could hold a secret).
-  const vault = shim ? { env: {}, hidden: [] } : await vaultEnv(ctx, process.cwd(), envName, [cmd, ...args.slice(0, 1)].join(" ").slice(0, 80));
+  const vault = shim ? { env: {}, hidden: [] } : await vaultEnv(ctx, process.cwd(), envName, [cmd, ...args.slice(0, 1)].join(" ").slice(0, 80), why);
   // A shim must find the real binary, not itself.
   const PATH = (process.env.PATH ?? "").split(delimiter).filter((d) => resolve(d) !== resolve(binDir(ctx))).join(delimiter);
   // Windows spells it Path; a second PATH key next to it would leave the child with either one.
   const base = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.toUpperCase() !== "PATH"));
-  const childEnv = { ...base, PATH, ...vault.env, ...env, ...execMarker(shim, envName) };
+  // The repo's Claude Code and Codex accounts (`0b use`), unless this shell picked its own; a CLI's shim (wrangler) has no use for them.
+  const agents = shim && shim in CLIS ? {} : agentProfileEnv(ctx, process.cwd());
+  const childEnv = { ...base, PATH, ...vault.env, ...env, ...agents, ...execMarker(shim, envName) };
   // Only secrets are masked; variables (PORT, NODE_ENV) show as they are.
   const values = vault.hidden;
   const mask = values.length > 0 && !process.stdout.isTTY;

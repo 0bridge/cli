@@ -2,7 +2,31 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
-import { accountName, CloudClient, deviceTokenKey, extraClaudeDirs, findAccount, loadAccounts, seenIn, editMcpTables, openSecretStore, parseToml, readJson, repoOf, writeAtomic, type CloudProjects, type Context } from "@0bridge/core";
+import {
+  accountName,
+  CloudClient,
+  deviceTokenKey,
+  extraClaudeDirs,
+  findAccount,
+  importProject,
+  loadManifest,
+  loadAccounts,
+  loadState,
+  projectScope,
+  requireManifest,
+  saveManifest,
+  saveState,
+  seenIn,
+  editMcpTables,
+  openSecretStore,
+  parseToml,
+  readJson,
+  repoOf,
+  withVault,
+  writeAtomic,
+  type CloudProjects,
+  type Context,
+} from "@0bridge/core";
 import { cloudClient, findConnection } from "./cloud.ts";
 import { CLOUD_HOOK_COMMAND, CLOUD_HOOK_PATH, cloudHookScript } from "./cloud-hook.ts";
 import { ignoreLocally } from "./files.ts";
@@ -37,7 +61,7 @@ function fail(msg: string): never {
 }
 
 /** This checkout and the repo it's for (the remote, so every clone is the same project). */
-function here(cwd = process.cwd()): { root: string; repo: string } {
+export function here(cwd = process.cwd()): { root: string; repo: string } {
   const inRepo = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd, encoding: "utf8" }).stdout?.trim() === "true";
   if (!inRepo) fail("run this inside a git repo (the project is the repo)");
   const r = repoOf(cwd);
@@ -284,8 +308,69 @@ export interface ProjectOptions {
   readOnly?: boolean;
 }
 
+/**
+ * Strict holds in Claude Code (the local scope replaces the user-scope 0bridge) and Codex (the
+ * project table is layered over the global one). Cursor doesn't replace: a server in both
+ * ~/.cursor/mcp.json and .cursor/mcp.json is loaded twice (Cursor staff, forum.cursor.com/t/151971,
+ * 2026-02), so its agents still reach the global endpoint, and with it the global connections.
+ */
+function cursorStrictNote(done: { tool: string }[]) {
+  if (!done.some((d) => d.tool === "Cursor")) return;
+  console.log(c.yellow(`● Cursor loads its global 0bridge next to this project's (it doesn't let one replace the other), so agents there can still use connections outside this project.`));
+  console.log(c.dim(`  For strict in Cursor, turn the global 0bridge off in Cursor Settings → MCP while you work here.`));
+}
+
+/** The checkout gets its repo's project scope from now on (`0b apply` writes into it). */
+function registerCheckout(ctx: Context, h: { root: string; repo: string }) {
+  const st = loadState(ctx);
+  (st.projects ??= {})[h.root] ??= { repo: h.repo, managed: {} };
+  st.projects[h.root]!.repo = h.repo;
+  saveState(ctx, st);
+}
+
+/**
+ * The project scope's local commands (no account needed): `import` brings what this checkout's
+ * tools have in their project files under 0bridge, `instructions on|off` whether every tool here is
+ * made to read the repo's AGENTS.md or CLAUDE.md. True when `sub` was one of them.
+ */
+function localCommand(ctx: Context, sub: string | undefined, rest: string[]): boolean {
+  if (sub === "import") {
+    const h = here();
+    const m = requireManifest(ctx);
+    const st = loadState(ctx);
+    const r = importProject(ctx, m, st, withVault(ctx, openSecretStore(ctx.storeDir)), h);
+    saveManifest(ctx, m);
+    saveState(ctx, st);
+    for (const s of r.servers) console.log(`  ${c.green("+")} mcp ${s.name} ${c.dim(`from ${s.from}`)}`);
+    for (const s of r.skills) console.log(`  ${c.green("+")} skill ${s.name} ${c.dim(`from ${s.from}`)}`);
+    if (r.secrets.length) console.log(`  ${c.cyan("🔒")} moved ${r.secrets.length} secret(s) out of the config: ${c.dim(r.secrets.join(", "))}`);
+    for (const x of r.conflicts) console.log(`  ${c.yellow("!")} ${x.kind} ${x.name}: ${x.tool}'s differs from the one ${h.repo} already has; left as is`);
+    if (!r.servers.length && !r.skills.length && !r.conflicts.length) console.log(c.dim("  nothing new"));
+    console.log(`\n${c.bold(h.repo)}: ${c.cyan("0b apply")} writes these into every tool in this checkout (and the repo's other registered clones).`);
+    return true;
+  }
+  if (sub === "instructions") {
+    const on = rest[0] === "on" ? true : rest[0] === "off" ? false : fail("usage: 0b project instructions on|off");
+    const h = here();
+    const m = requireManifest(ctx);
+    const scope = projectScope(m, h.repo, true);
+    if (on) delete scope.instructions;
+    else scope.instructions = false;
+    saveManifest(ctx, m);
+    registerCheckout(ctx, h);
+    console.log(
+      on
+        ? `${c.green("✓")} ${h.repo}: ${c.cyan("0b apply")} makes every tool read its instructions (Claude Code imports AGENTS.md, or AGENTS.md gets a copy of CLAUDE.md for Codex and Cursor)`
+        : `${c.green("✓")} ${h.repo}: its instruction files are left to you; ${c.cyan("0b apply")} takes out the blocks 0bridge added`,
+    );
+    return true;
+  }
+  return false;
+}
+
 export async function projectCommand(ctx: Context, args: string[], opts: ProjectOptions): Promise<void> {
   const [sub, ...rest] = args;
+  if (localCommand(ctx, sub, rest)) return;
   const { cfg, client } = cloudClient(ctx);
   switch (sub) {
     case undefined:
@@ -350,6 +435,7 @@ export async function projectCommand(ctx: Context, args: string[], opts: Project
         store.delete(tokenKey(old.projectId));
       }
       saveLinks(ctx, links);
+      registerCheckout(ctx, h);
       console.log(`${c.green("✓")} ${c.bold(project.repo)} is a project${project.strict || opts.strict ? " (strict)" : ""}. AI tools in this checkout now use its endpoint.`);
       if (loadAccounts(ctx).accounts.length > 1) console.log(c.dim(`  It belongs to ${accountName(cfg)}: 0b commands in this checkout use that account.`));
       const { all, project: p } = await projectOf(client, h.repo);
@@ -360,7 +446,11 @@ export async function projectCommand(ctx: Context, args: string[], opts: Project
         Boolean(p?.strict),
       );
       console.log();
+      if (p?.strict) cursorStrictNote(done);
       if (!own.length) console.log(c.dim(`Limit a connection to this project: 0b project use <service> [--label <account>]`));
+      const m = loadManifest(ctx);
+      const scope = m && projectScope(m, h.repo);
+      if (scope && (Object.keys(scope.mcpServers).length || Object.keys(scope.skills).length)) console.log(`${c.cyan("0b apply")} writes ${h.repo}'s own MCP servers and skills into this checkout.`);
       console.log(c.dim("Start a new session in each tool (or reconnect MCP) to pick it up."));
       return;
     }
@@ -417,6 +507,7 @@ export async function projectCommand(ctx: Context, args: string[], opts: Project
       if (!project) fail(`${h.repo} isn't a project yet: 0b project link`);
       await client.updateProject(project.id, on);
       console.log(on ? `${c.green("✓")} strict: agents in ${project.repo} see only the connections limited to it` : `${c.green("✓")} agents in ${project.repo} see its connections and the global ones`);
+      if (on) cursorStrictNote(toolStates(ctx, h.root, project.id).filter((t) => t.on));
       return;
     }
     case "hide":
@@ -469,7 +560,7 @@ export async function projectCommand(ctx: Context, args: string[], opts: Project
       return;
     }
     default:
-      fail(`unknown subcommand "project ${sub}". Try: link, status, list, use, unuse, hide, show, strict, cloud, unlink, rm`);
+      fail(`unknown subcommand "project ${sub}". Try: link, status, list, use, unuse, hide, show, strict, cloud, import, instructions, unlink, rm`);
   }
 }
 

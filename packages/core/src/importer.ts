@@ -2,9 +2,9 @@ import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Context, Manifest, McpServer, State, ToolId } from "./types.ts";
 import { TOOL_IDS } from "./types.ts";
-import { getAdapters, isInstalled, portableKey } from "./adapters.ts";
+import { getAdapters, isInstalled, portableKey, projectAdapters } from "./adapters.ts";
 import { looksSecret, secretRef, type SecretStore } from "./secrets.ts";
-import { addManaged, managedOf, paths, readInstructions, resolveServer } from "./store.ts";
+import { addManaged, managedOf, paths, projectScope, projectSkillsDir, readInstructions, resolveServer } from "./store.ts";
 import { copySkill, listSkills, sameSkill } from "./skills.ts";
 import { extractUnmanaged } from "./instructions.ts";
 import { hashDir, readText, writeAtomic } from "./util.ts";
@@ -103,14 +103,15 @@ export function distinctBy<T>(items: T[], key: (t: T) => string): T[] {
   });
 }
 
-function extractSecrets(name: string, s: McpServer, store: SecretStore, report: ImportReport): McpServer {
+/** `prefix`: put before the secret's name (a repo's servers: `project:<repo>:`), so it can't take a global one's. */
+function extractSecrets(name: string, s: McpServer, store: SecretStore, report: Pick<ImportReport, "secrets">, prefix = ""): McpServer {
   const move = (group: "env" | "headers") => {
     const src = s[group];
     if (!src) return undefined;
     return Object.fromEntries(
       Object.entries(src).map(([k, v]) => {
         if (!looksSecret(k, v)) return [k, v];
-        const key = `${name}.${group}.${k}`;
+        const key = `${prefix}${name}.${group}.${k}`;
         store.set(key, v);
         report.secrets.push(key);
         return [k, secretRef(key)];
@@ -198,6 +199,70 @@ export function importFromTools(ctx: Context, m: Manifest, state: State, store: 
     const kept = readInstructions(ctx).trim();
     for (const i of scan.instructions) {
       if (i.text !== kept) report.conflicts.push({ kind: "instructions", name: "AGENTS.md", kept: report.instructionsFrom ?? "manifest", other: i.tool });
+    }
+  }
+  return report;
+}
+
+export interface ProjectImportReport {
+  servers: { name: string; from: ToolId }[];
+  skills: { name: string; from: ToolId }[];
+  /** Already in the repo's scope the same way: 0bridge keeps that tool's copy in sync from now on. */
+  adopted: { kind: "mcp" | "skill"; name: string; tool: ToolId }[];
+  conflicts: { kind: "mcp" | "skill"; name: string; tool: ToolId }[];
+  secrets: string[];
+}
+
+/** The server `0b project link` writes into a checkout: the link's, never part of the repo's scope. */
+export const LINK_SERVER = "0bridge";
+
+/**
+ * Bring what a checkout's tools have in their project files (Claude Code's local scope and the
+ * repo's .mcp.json, .codex/config.toml, .cursor/mcp.json, and .claude/skills, .agents/skills,
+ * .cursor/skills) into its repo's project scope, and register the checkout for `0b apply`. Writes
+ * only inside the 0bridge store; a name already in the scope with another definition is reported
+ * and left out.
+ */
+export function importProject(ctx: Context, m: Manifest, state: State, store: SecretStore, co: { root: string; repo: string }): ProjectImportReport {
+  const report: ProjectImportReport = { servers: [], skills: [], adopted: [], conflicts: [], secrets: [] };
+  const scope = projectScope(m, co.repo, true);
+  const entry = ((state.projects ??= {})[co.root] ??= { repo: co.repo, managed: {} });
+  const global = getAdapters(ctx);
+  const { adapters } = projectAdapters(ctx, co.root);
+  const skillStore = projectSkillsDir(ctx, co.repo);
+  for (const tool of TOOL_IDS) {
+    const a = adapters[tool];
+    if (!a || !isInstalled(global[tool])) continue;
+    const managed = (entry.managed[tool] ??= { mcp: [], skills: [] });
+    for (const [name, server] of Object.entries(a.readServers())) {
+      if (name === LINK_SERVER) continue;
+      const existing = scope.mcpServers[name];
+      if (!existing) {
+        scope.mcpServers[name] = extractSecrets(name, server, store, report, `project:${co.repo}:`);
+        report.servers.push({ name, from: tool });
+      } else if (portableKey(resolveServer(existing, store)) === portableKey(server)) {
+        if (!report.servers.some((s) => s.name === name)) report.adopted.push({ kind: "mcp", name, tool });
+      } else {
+        report.conflicts.push({ kind: "mcp", name, tool });
+        continue;
+      }
+      addManaged(managed.mcp, name);
+    }
+    for (const name of listSkills(a.skillsDir)) {
+      const src = join(a.skillsDir!, name);
+      const dst = join(skillStore, name);
+      if (!scope.skills[name] || !existsSync(dst)) {
+        mkdirSync(skillStore, { recursive: true });
+        copySkill(src, dst);
+        scope.skills[name] ??= {};
+        report.skills.push({ name, from: tool });
+      } else if (sameSkill(src, dst)) {
+        if (!report.skills.some((s) => s.name === name)) report.adopted.push({ kind: "skill", name, tool });
+      } else {
+        report.conflicts.push({ kind: "skill", name, tool });
+        continue;
+      }
+      addManaged(managed.skills, name);
     }
   }
   return report;

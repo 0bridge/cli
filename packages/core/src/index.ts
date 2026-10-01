@@ -6,6 +6,8 @@ export * from "./importer.ts";
 export * from "./plan.ts";
 export * from "./skills.ts";
 export * from "./instructions.ts";
+export * from "./agent-profiles.ts";
+export * from "./git.ts";
 export { editMcpTables } from "./toml-edit.ts";
 export { parse as parseToml } from "smol-toml";
 export { readJson, readText, shellSplit, writeAtomic } from "./util.ts";

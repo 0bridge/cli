@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
-import { readJson, writeAtomic, type Context } from "@0bridge/core";
+import { agentProfiles, readJson, writeAtomic, type Context } from "@0bridge/core";
 
 /**
  * What coding agents may do on this machine, in `~/.0bridge/agent.json`: nothing until the
@@ -98,6 +98,17 @@ export function loadAgentConfig(ctx: Context): AgentConfig {
     repos: (cfg?.repos ?? []).map((r) => ({ ...r, mode: MODES.includes(r.mode) ? r.mode : "edit", worktree: r.worktree !== false, deny: Array.isArray(r.deny) ? r.deny : [] })),
     ...(cfg?.profiles ? { profiles: cfg.profiles } : {}),
   };
+}
+
+/**
+ * agent.json's named accounts plus the `0b use` profiles (agent-profiles.ts) it doesn't name, so a
+ * task can start under any account this machine has. Not saved back: those stay `0b use`'s.
+ */
+export function withUseProfiles(ctx: Context, cfg: AgentConfig): AgentConfig {
+  const profiles = structuredClone(cfg.profiles ?? {});
+  for (const p of agentProfiles(ctx, "claude")) (profiles.claude ??= {})[p.name] ??= { CLAUDE_CONFIG_DIR: p.dir };
+  for (const p of agentProfiles(ctx, "codex")) (profiles.codex ??= {})[p.name] ??= { CODEX_HOME: p.dir };
+  return Object.keys(profiles).length ? { ...cfg, profiles } : cfg;
 }
 
 export function saveAgentConfig(ctx: Context, cfg: AgentConfig): void {

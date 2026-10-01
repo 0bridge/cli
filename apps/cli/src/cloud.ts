@@ -506,14 +506,15 @@ export async function connectService(
   log: (s: string) => void = (s) => p.log.info(s),
   oauthClient?: OAuthClient,
   hosted?: boolean,
+  readOnly?: boolean,
 ): Promise<{ id: string; display: string; prefix: string }> {
   const { client } = cloudClient(ctx);
-  const r = await client.connect(service, label, url, headers, oauthClient, hosted);
+  const r = await client.connect(service, label, url, headers, oauthClient, hosted, readOnly);
   if (r.state === "conflict") throw new CloudError(`${r.error} — try the label "${r.suggestion}"`, 409);
   if (r.state === "needs_app") {
     const setup = appSetupFor(url);
     if (oauthClient || !setup || !process.stdin.isTTY) throw new CloudError(`${r.error} (0b connect ${service} --client-id … --client-secret …)`, 422);
-    return connectService(ctx, service, label, url, headers, log, await setUpApp(ctx, setup, log));
+    return connectService(ctx, service, label, url, headers, log, await setUpApp(ctx, setup, log), false, readOnly);
   }
   if (r.state === "ready") return r;
   if (r.state === "needs_key") throw new CloudError(`${r.display} needs a key: 0b key ${r.prefix}`, 400);
@@ -560,7 +561,7 @@ export async function connectCommand(
   ctx: Context,
   service: string | undefined,
   urlArg: string | undefined,
-  opts: { headers?: Record<string, string>; label?: string; clientId?: string; clientSecret?: string; api?: string; auth?: string; spec?: string; allowWrite?: boolean; yes?: boolean; app?: string } = {},
+  opts: { headers?: Record<string, string>; label?: string; clientId?: string; clientSecret?: string; api?: string; auth?: string; spec?: string; allowWrite?: boolean; yes?: boolean; app?: string; known?: boolean; readOnly?: boolean } = {},
 ) {
   if (!service) {
     console.log(
@@ -571,8 +572,8 @@ export async function connectCommand(
   if (opts.spec) return connectSpecCommand(ctx, service, opts.spec, opts);
   // In the user's own terminal with nothing decided on the command line: show every way in and let them pick.
   let url = urlArg;
-  // --app already says which way (Slack: the workspace's own app, or 0bridge's), so no menu.
-  if (!opts.api && !urlArg && !opts.clientId && !opts.headers && !opts.yes && !opts.app && process.stdin.isTTY) {
+  // --app already says which way (Slack: the workspace's own app, or 0bridge's), so no menu; `known`: 0bridge's connector, as a team picked it.
+  if (!opts.api && !urlArg && !opts.clientId && !opts.headers && !opts.yes && !opts.app && !opts.known && process.stdin.isTTY) {
     const way = await chooseWay(ctx, service);
     if (way.kind === "cli") return connectCli(ctx, way.cli, opts.label);
     if (way.kind === "preset") return connectApiCommand(ctx, way.service, opts);
@@ -622,14 +623,20 @@ export async function connectCommand(
   if (hosted && API_CONNECTORS[service.toLowerCase()]) return connectApiCommand(ctx, service, { ...opts, label: label ?? "" });
   let r: Awaited<ReturnType<typeof connectService>>;
   try {
-    r = await connectService(ctx, service, label, url, opts.headers, (s) => console.log(s), oauthClient, hosted);
+    r = await connectService(ctx, service, label, url, opts.headers, (s) => console.log(s), oauthClient, hosted, opts.readOnly);
   } catch (e) {
     // Any other server that only accepts reviewed apps: the same way out.
     if (/only accepts sign-in from approved apps/.test((e as Error).message)) return connectDirect(ctx, service.toLowerCase(), url, (e as Error).message);
     throw e;
   }
   const conn = (await cloudClient(ctx).client.connections()).find((x) => x.id === r.id);
-  console.log(`${c.green("✓")} ${r.display} connected${conn ? ` · ${conn.tools} tools as ${c.cyan(`${conn.prefix}__*`)}` : ""}. Every tool using your 0bridge can use it now.`);
+  console.log(`${c.green("✓")} ${r.display} connected${conn ? ` · ${toolCount(conn)} as ${c.cyan(`${conn.prefix}__*`)}` : ""}. Every tool using your 0bridge can use it now.`);
+}
+
+/** "12 tools", or "5 of 12 tools, read-only" when some are kept from agents. */
+export function toolCount(x: { tools: number; toolsOn?: number; readOnly?: boolean }): string {
+  const on = x.toolsOn ?? x.tools;
+  return `${on < x.tools ? `${on} of ${x.tools}` : x.tools} ${x.tools === 1 ? "tool" : "tools"}${x.readOnly ? ", read-only" : ""}`;
 }
 
 type Way =
@@ -773,11 +780,11 @@ function keyHint(ctx: Context, r: { id: string; prefix: string; keys: string[]; 
  * An API from its OpenAPI document: the gateway reads its auth and operations. Asks for the keys
  * in a terminal; with --yes or without one (an agent), registers it and prints how to add them.
  */
-async function connectSpecCommand(ctx: Context, service: string, specUrl: string, opts: { label?: string; allowWrite?: boolean; yes?: boolean; api?: string }): Promise<void> {
+async function connectSpecCommand(ctx: Context, service: string, specUrl: string, opts: { label?: string; allowWrite?: boolean; yes?: boolean; api?: string; readOnly?: boolean }): Promise<void> {
   const { client } = cloudClient(ctx);
   const named = /[./]/.test(service) ? undefined : service;
   const label = opts.yes || !process.stdin.isTTY ? opts.label : named ? await askLabel(ctx, named, opts.label) : opts.label;
-  const r = await client.connectApi({ service: named, label, spec: specUrl, baseUrl: opts.api, allowWrite: opts.allowWrite });
+  const r = await client.connectApi({ service: named, label, spec: specUrl, baseUrl: opts.api, allowWrite: opts.allowWrite, readOnly: opts.readOnly });
   if (r.state === "conflict") throw new CloudError(`${r.error} — try the label "${r.suggestion}"`, 409);
   if (r.state === "needs_app") throw new CloudError(r.error, 422);
   const about = r.openapi ? `${r.openapi.title}, ${r.openapi.ops} operations, ${r.openapi.write ? "writes allowed" : "reads only (allow writes on the dashboard)"}` : "API";
@@ -788,7 +795,7 @@ async function connectSpecCommand(ctx: Context, service: string, specUrl: string
     await client.setKey(r.id, key);
   }
   const conn = (await client.connections()).find((x) => x.id === r.id);
-  console.log(`${c.green("✓")} ${r.display} connected${conn ? ` · ${conn.tools} tools as ${c.cyan(`${conn.prefix}__*`)} (search, describe, call${r.openapi?.write ? ", call_write" : ""})` : ""}. The key stays with 0bridge.`);
+  console.log(`${c.green("✓")} ${r.display} connected${conn ? ` · ${toolCount(conn)} as ${c.cyan(`${conn.prefix}__*`)} (search, describe, call${r.openapi?.write ? ", call_write" : ""})` : ""}. The key stays with 0bridge.`);
 }
 
 /** `0b key <service>`: give an API connection its key(s), typed hidden in the user's own terminal. */
@@ -857,7 +864,7 @@ function parseAuthStyle(s = "bearer"): { type: "bearer" | "basic" | "header" | "
  * with a key. The key is asked for (hidden) or read from stdin, never taken from the command line,
  * and goes to the gateway only: agents call the API through 0bridge without seeing it.
  */
-async function connectApiCommand(ctx: Context, service: string, opts: { label?: string; api?: string; auth?: string; yes?: boolean }): Promise<void> {
+async function connectApiCommand(ctx: Context, service: string, opts: { label?: string; api?: string; auth?: string; yes?: boolean; readOnly?: boolean }): Promise<void> {
   const { client } = cloudClient(ctx);
   const preset = opts.api ? undefined : service.toLowerCase();
   const asks = process.stdin.isTTY && !opts.yes;
@@ -888,7 +895,7 @@ async function connectApiCommand(ctx: Context, service: string, opts: { label?: 
       key = String(v).trim();
     } else key = opts.yes ? undefined : readStdin().trim() || undefined;
   }
-  const r = await client.connectApi({ service, label, preset, baseUrl: opts.api, auth, key });
+  const r = await client.connectApi({ service, label, preset, baseUrl: opts.api, auth, key, readOnly: opts.readOnly });
   if (r.state === "conflict") throw new CloudError(`${r.error} — try the label "${r.suggestion}"`, 409);
   if (r.state === "needs_app") throw new CloudError(r.error, 422);
   if (r.state === "needs_key") {
@@ -907,7 +914,7 @@ async function connectApiCommand(ctx: Context, service: string, opts: { label?: 
     }
   }
   const conn = (await client.connections()).find((x) => x.id === r.id);
-  console.log(`${c.green("✓")} ${r.display} connected (API)${conn ? ` · ${conn.tools} tools as ${c.cyan(`${conn.prefix}__*`)}` : ""}. The key stays with 0bridge; agents call it through your bridge.`);
+  console.log(`${c.green("✓")} ${r.display} connected (API)${conn ? ` · ${toolCount(conn)} as ${c.cyan(`${conn.prefix}__*`)}` : ""}. The key stays with 0bridge; agents call it through your bridge.`);
 }
 
 /**
@@ -988,10 +995,97 @@ export async function cloudStatus(ctx: Context) {
   for (const x of conns) console.log("  " + connectionLine(x));
 }
 
-export function connectionLine(x: { display: string; prefix: string; state: string; tools: number; url: string }, width = 20): string {
+export function connectionLine(x: { display: string; prefix: string; state: string; tools: number; url: string; toolsOn?: number; readOnly?: boolean; account?: string | null }, width = 20): string {
   const state = x.state === "ready" ? c.green("ready") : x.state === "authenticating" ? c.yellow("needs sign-in") : c.red(x.state);
   const pad = (s: string, n: number, visible = s.length) => s + " ".repeat(Math.max(1, n - visible));
-  return `${pad(x.display, width)}${pad(state, x.state === "authenticating" ? 15 : 8, x.state === "authenticating" ? 13 : x.state.length)}${String(x.tools).padStart(3)} tools  ${c.dim(`${x.prefix}__*  ${x.url}`)}`;
+  // Only what the user changed, and who it's signed in as when the service said.
+  const off = x.toolsOn !== undefined && x.toolsOn < x.tools && !x.readOnly ? `${x.tools - x.toolsOn} off` : null;
+  const extra = [x.readOnly && "read-only", off, x.account && `as ${x.account}`].filter(Boolean).join(", ");
+  return `${pad(x.display, width)}${pad(state, x.state === "authenticating" ? 15 : 8, x.state === "authenticating" ? 13 : x.state.length)}${String(x.tools).padStart(3)} tools${extra ? ` ${c.yellow(`(${extra})`)}` : ""}  ${c.dim(`${x.prefix}__*  ${x.url}`)}`;
+}
+
+/**
+ * `0b connection [<service>] …`: what agents get from a connection and read about it. Without a
+ * service, every connection; with one, its account, description, tags, read-only and each tool.
+ *   read-only on|off · tool on|off <tool>… · describe "<text>" · tags a,b  (- clears either)
+ */
+export async function connectionCommand(ctx: Context, args: string[], opts: { label?: string; json?: boolean } = {}): Promise<void> {
+  const [service, sub, ...rest] = args;
+  const { client } = cloudClient(ctx);
+  if (!service || service === "list") {
+    const conns = await client.connections();
+    if (opts.json) return console.log(JSON.stringify(conns, null, 2));
+    if (!conns.length) return console.log(c.dim(`No services yet. Try ${c.cyan("0b connect linear")}.`));
+    const width = Math.min(32, Math.max(20, ...conns.map((x) => x.display.length + 2)));
+    for (const x of conns) {
+      console.log("  " + connectionLine(x, width));
+      const about = [x.description, x.tags?.length ? `#${x.tags.join(" #")}` : null].filter(Boolean).join("  ");
+      if (about) console.log(`  ${" ".repeat(width)}${c.dim(about)}`);
+    }
+    return;
+  }
+  const conn = await findConnection(ctx, service, opts.label);
+  const again = `0b connection ${conn.service}${conn.label ? ` --label ${conn.label}` : ""}`;
+  const onOff = (v: string | undefined, usage: string) => (v === "on" ? true : v === "off" ? false : die(`usage: ${again} ${usage}`));
+  switch (sub) {
+    case undefined:
+    case "show": {
+      const t = await client.connectionTools(conn.id);
+      if (opts.json) return console.log(JSON.stringify({ ...conn, tools: t.tools }, null, 2));
+      const on = t.tools.filter((x) => !x.off).length;
+      console.log(`${c.bold(conn.display)}  ${conn.state === "ready" ? c.green("ready") : c.yellow(conn.state)}${conn.account ? `  ${c.dim("signed in as")} ${conn.account}` : ""}`);
+      console.log(`  ${c.dim("about".padEnd(10))}${conn.description ?? c.dim(`— (${again} describe "work tracker")`)}`);
+      console.log(`  ${c.dim("tags".padEnd(10))}${conn.tags?.length ? conn.tags.join(", ") : c.dim(`— (${again} tags work,acme)`)}`);
+      console.log(`  ${c.dim("read-only".padEnd(10))}${t.readOnly ? c.yellow("on") + c.dim(" (agents get only tools that read)") : "off"}`);
+      console.log(`  ${c.dim("tools".padEnd(10))}${on} of ${t.tools.length} on${t.tools.length ? c.dim(`   (${again} tool off <name>)`) : ""}`);
+      for (const x of t.tools) console.log(`    ${x.off ? c.dim("–") : c.green("✓")} ${x.off ? c.dim(x.name) : x.name}${x.off ? c.dim(x.off === "off" ? "  turned off" : "  changes data (read-only)") : ""}`);
+      return;
+    }
+    case "read-only":
+    case "readonly": {
+      const readOnly = onOff(rest[0], "read-only on|off");
+      const r = await client.updateConnection(conn.id, { readOnly });
+      const after = (await client.connections()).find((x) => x.id === conn.id);
+      console.log(`${c.green("✓")} ${r.display} is ${readOnly ? "read-only: agents get only the tools that read" : "no longer read-only"}${after ? ` · ${toolCount(after)}` : ""}`);
+      return;
+    }
+    case "tool":
+    case "tools": {
+      const on = onOff(rest[0], "tool on|off <tool>…");
+      const names = rest.slice(1);
+      if (!names.length) die(`usage: ${again} tool ${rest[0]} <tool>…   (${again} lists them)`);
+      const known = (await client.connectionTools(conn.id)).tools.map((x) => x.name);
+      // The name an agent sees (linear__neotax__save_issue) works too.
+      const upstream = names.map((n) => (n.startsWith(`${conn.prefix}__`) ? n.slice(conn.prefix.length + 2) : n));
+      const unknown = upstream.filter((n) => !known.includes(n));
+      if (unknown.length) die(`${conn.display} has no tool ${unknown.join(", ")} (${again} lists them)`);
+      const r = await client.updateConnection(conn.id, { tools: Object.fromEntries(upstream.map((n) => [n, on])) });
+      console.log(`${c.green("✓")} ${upstream.join(", ")} ${on ? "on" : "off"} for ${r.display}${r.readOnly && on ? c.dim(" (read-only still keeps tools that change data out)") : ""}`);
+      return;
+    }
+    case "describe":
+    case "description": {
+      const text = rest.join(" ").trim();
+      if (!text) die(`usage: ${again} describe "<what it's for>"   (- clears it)`);
+      const r = await client.updateConnection(conn.id, { description: text === "-" ? null : text });
+      console.log(`${c.green("✓")} ${r.display}: ${r.description ?? c.dim("no description")}${r.description ? c.dim("  (agents read it in its tools and bridge__connections)") : ""}`);
+      return;
+    }
+    case "tags":
+    case "tag": {
+      const list = rest.join(",").trim();
+      if (!list) die(`usage: ${again} tags work,acme   (- clears them)`);
+      const r = await client.updateConnection(conn.id, { tags: list === "-" ? null : list.split(",") });
+      console.log(`${c.green("✓")} ${r.display}: ${r.tags.length ? r.tags.join(", ") : c.dim("no tags")}`);
+      return;
+    }
+    default:
+      die(`unknown "${sub}": ${again} [read-only on|off | tool on|off <tool>… | describe "<text>" | tags a,b]`);
+  }
+}
+
+function die(msg: string): never {
+  throw new Error(msg);
 }
 
 /** Move remote servers configured locally into the cloud, then stop syncing them locally. */

@@ -57,8 +57,10 @@ When the user asks to set up this machine or a repo ("sync the backend dev envir
 - It never connects a third party's MCP server on its own (someone else's server sees the data passing through). If only those exist, it lists them: ask the user before connecting one.
 - It opens the service's sign-in in the user's browser and waits up to 5 minutes. Run it with a long timeout, and tell the user to finish signing in.
 - Another account of the same service: \`0b connect linear --label <workspace>\`.
+- The connectors the user's team uses: \`0b connect --team\` connects the ones they haven't, one by one, each with their own sign-in. \`0b team\` shows the team's connectors, skills (\`<team>--<skill>\`, set by its admins: don't edit or push them) and instructions.
 - A few services (Vercel) accept only apps they've reviewed, not the bridge. \`0b connect vercel\` then adds the server to each AI tool directly; tell the user to sign in once in each tool (Claude Code: \`/mcp\`; Codex: \`codex mcp login vercel\`; Cursor: MCP settings).
 - \`0b cloud\` lists connections. \`0b rename linear --label <current> <new>\` changes a label (sign-in kept); \`0b disconnect linear --label <name>\` removes one. Leave out \`--label\` when the service has one account.
+- \`0b connection\` shows who each connection is signed in as and what it's for. The user decides what agents get: \`0b connect <service> --read-only\` (only tools that read), \`0b connection <service> read-only on|off\`, \`0b connection <service> tool off <tool>\`, \`0b connection <service> describe "work calendar"\` and \`tags work,acme\`. Change these only when the user asks.
 - New tools appear after the AI tool reloads its MCP servers; ask the user to restart the session if they don't.
 
 ## Local MCP servers (run on this machine)
@@ -70,7 +72,13 @@ When the user asks to set up this machine or a repo ("sync the backend dev envir
 ## Skills and instructions
 
 - A new skill written into one tool's skills folder (e.g. \`~/.claude/skills/<name>/SKILL.md\`): run \`0b import\` then \`0b apply --yes\` to share it with every tool.
+- A skill folder anywhere else (written by hand, downloaded): \`0b skill add <folder>\` checks it (SKILL.md with \`name\` and \`description\` front matter) and adds it to the synced skills; then \`0b apply --yes\`.
+- Only for one repo: \`0b mcp add <name> --project …\` and \`0b skill add <folder> --project\` inside it; \`0b apply --yes\` writes them into that repo's checkouts (kept out of git). \`0b project import\` brings what a checkout's tools already have there under 0bridge.
 - \`0b skill list\`, \`0b skill disable <name>\`.
+
+## Claude Code and Codex accounts
+
+- \`0b use\` lists them (a second account is a config folder, \`~/.claude-<name>\`). \`0b use add <name>\` makes one and prints how the user signs in (they run that themselves). \`0b use <name>\` in a repo picks it there; it takes effect when the tool starts through \`0b use shims\` or \`0b exec -- claude\`. A running session can't change account.
 
 ## CLI accounts per repo
 
@@ -135,7 +143,7 @@ The user keeps secrets in their 0bridge vault: encrypted on their machines, per 
 
 - \`0b exec -- <command>\` runs it with this repo's \`dev\` values (plus global ones) as environment variables. Examples: \`0b exec -- bun dev\`, \`0b exec -- npm test\`, \`0b exec -- npx prisma migrate dev\`.
 - In output you read, secret values show as \`***\`. That's expected; don't try to recover them.
-- \`0b exec --env prod -- <command>\` uses production values. It needs the user to approve in their browser; tell them before you run it, and never work around a refusal.
+- \`0b exec --env prod --why "<one sentence>" -- <command>\` uses production values. It needs the user to approve in their browser, often with several sessions running, so always pass \`--why\`: what you're doing and why it needs production values (e.g. "Deploy the billing fix to production; wrangler needs the Cloudflare token"). The approval page shows it next to this session's title. Tell them before you run it, and never work around a refusal.
 - For a package.json script that always needs them, the user may prefer \`"dev": "0b exec -- next dev"\`. Suggest it; don't change scripts unasked.
 - The command also gets \`ZEROBRIDGE_ENV\` (\`dev\` or \`prod\`): a script can check it to know it runs under \`0b exec\`, and with which values.
 - Some keys may stay in the repo's \`.env\` on purpose (a local database address, a key made on this machine). How the repo combines the file with \`0b exec\` values is up to its own tooling; read the repo's instructions for it.

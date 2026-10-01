@@ -1,6 +1,7 @@
 import { parseArgs } from "node:util";
 import { createInterface } from "node:readline/promises";
 import { existsSync, mkdirSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   TOOL_IDS,
   defaultContext,
@@ -26,14 +27,22 @@ import {
   saveManifest,
   saveState,
   secretValues,
+  LINK_SERVER,
+  checkSkill,
+  copySkill,
+  projectScope,
+  projectSkillsDir,
+  readSkill,
+  sameSkill,
   type ImportReport,
+  type SkillCheck,
   type Manifest,
   type McpServer,
   type ToolId,
 } from "@0bridge/core";
 import { c, printPlan, printStatus, printWarnings, where } from "./ui.ts";
 import { homeTui, initTui, syncFlow } from "./tui.ts";
-import { cloudClient, cloudStatus, connectCommand, findConnection, keyCommand, login, logout, migrateTui, renameConnection } from "./cloud.ts";
+import { cloudClient, cloudStatus, connectCommand, connectionCommand, findConnection, keyCommand, login, logout, migrateTui, renameConnection } from "./cloud.ts";
 import { accountCommand } from "./account.ts";
 import { accountAt } from "./links.ts";
 import { printTree } from "./tree.ts";
@@ -44,12 +53,14 @@ import { historyCommand } from "./history.ts";
 import { filesCommand } from "./files.ts";
 import { installBackground, runBackground } from "./background.ts";
 import { secretCommand, vaultCommand } from "./vault.ts";
-import { projectCommand } from "./project.ts";
+import { here, projectCommand } from "./project.ts";
+import { useCommand } from "./use.ts";
 import { clipCommand } from "./clip.ts";
 import { updateCommand } from "./update.ts";
 import { resumeCommand } from "./resume.ts";
 import { hookCommand } from "./hook.ts";
 import { contextCommand, memoryCommand } from "./context.ts";
+import { connectTeam, teamCommand } from "./team.ts";
 import { agentCommand } from "./agent/index.ts";
 import { sessionsCommand } from "./sessions.ts";
 import { webhookCommand } from "./webhook.ts";
@@ -82,7 +93,21 @@ ${c.bold("Usage")}
   0b mcp add <name> --url <url> [--header K=V]... [--only t,...]
   0b mcp add <name> [--env K=V]... [--only t,...] -- <command> [args...]
   0b mcp enable|disable|remove <name>
+  0b skill add <folder>         Add a skill folder (SKILL.md with a name and description) to your synced
+        [--only t,...] [--force]  skills; 0b apply puts it in every tool. --force replaces one of that name
   0b skill list | enable|disable|remove <name>
+  --project                    With mcp and skill: this repo's own servers and skills instead, written into
+                                its checkouts by 0b apply (Claude Code's local scope, .codex/config.toml,
+                                .cursor/mcp.json, .claude/skills, .agents/skills), kept out of git
+  0b project import            Bring this checkout's project MCP servers and skills under 0bridge
+  0b project instructions on|off  Make every tool read this repo's AGENTS.md or CLAUDE.md (on by default)
+  0b use                       Claude Code and Codex accounts (config folders): which one starts here
+  0b use add <name>            A second account: ~/.claude-<name> (--tool codex: ~/.codex-<name>, --dir
+        [--tool t] [--dir d]    for another folder); prints how to sign in. 0b apply fills it like the first
+  0b use <name>                This repo starts Claude Code (and Codex, if it has <name>) as that account;
+        [--global] [--shell]    --global: everywhere else too; --shell: eval "$(0b use <name> --shell)"
+  0b use default | rm <name> | shims [off]   Back to the tool's own; forget one; claude and codex shims
+                               that start the account picked for the repo you're in
   0b secret set <NAME>         Store a secret in your vault, encrypted on this machine (asks for the value,
         [--env dev|prod]        or reads stdin). For this repo; --global for every repo and \${secret:<NAME>}
         [--global]
@@ -109,7 +134,8 @@ ${c.bold("Usage")}
         [--codex] [--cursor]    upload hook that use ZEROB_TOKEN, and get a 90-day token for it
         [--no-hooks] [--read-only]
   0b exec [--env prod] -- <cmd>  Run a command with this repo's secrets and CLI profile as env vars
-                               (and ZEROBRIDGE_ENV=dev|prod, so a script can tell it runs under 0b)
+        [--why "<sentence>"]    (and ZEROBRIDGE_ENV=dev|prod, so a script can tell it runs under 0b);
+                               --why is shown on the prod approval page: what the command is for
   0b vault [status]            Whether this machine can open your vault
   0b vault unlock              New machine: approve it in the browser (passkey) or with \`0b vault approve\`
         [--recovery-key]        on another machine; --recovery-key types the key instead
@@ -127,6 +153,8 @@ ${c.bold("Usage")}
   0b history hooks on|off      Upload each conversation as its turn ends (Claude Code, Codex, Cursor)
   0b context push|pull|sync|status  Your profile, global instructions and skills, on 0bridge for every AI app
   0b context rm <skill>        Remove a skill from 0bridge and your machines
+  0b team                      Your team workspaces: their connectors (which you have), skills and
+                               instructions; brings the skills (as <team>--<skill>) and instructions here
   0b context profile           Edit your profile (who you are, how you like to work)
   0b memory add|search|rm      Things your AIs should remember, searchable from any of them
   0b agent on|off|status       Let your AI apps start and steer coding agents on this machine
@@ -171,6 +199,8 @@ ${c.bold("Usage")}
                                (tools: search, describe, call; call_write once you allow writes)
                                In your terminal it lists every way in to pick from: MCP, API (you type
                                the key), or the CLI (wrangler, gh); --yes takes 0bridge's pick
+  0b connect --team            Every connector your team uses that you haven't connected, one by one,
+                               each signed in with your own account
   0b connect <service> [url]   An MCP server by its URL
         [--label name]         Account label (e.g. your org): tools become <service>__<label>__*.
                                Asked interactively; optional for a service's first account
@@ -185,6 +215,13 @@ ${c.bold("Usage")}
   0b connect <service> --spec <OpenAPI URL> [--allow-write]
                                An API from its OpenAPI/Swagger document: auth and operations are read from it
         [--yes]                Don't ask anything: register it and print what's missing (for agents)
+        [--read-only]          Agents get only its tools that read (any of the forms above)
+  0b connection [<service>]    Who each connection is signed in as, what it's for, and what agents get;
+        [--label a] [--json]    with a service: its tools, each on or off (alias: connections)
+  0b connection <service> read-only on|off       Agents get only the tools that read
+  0b connection <service> tool on|off <tool>…    Turn single tools off (or back on) for agents
+  0b connection <service> describe "<text>"      What it's for ("work calendar"); agents read it to
+  0b connection <service> tags a,b                pick the right account. - clears either
   0b key <service>             Type an API's key(s) into 0bridge (hidden; never through an agent or chat)
   0b connect google-calendar   Google Calendar through its API (sign in with Google)
   0b rename <service> [--label <current>] <new label>
@@ -246,7 +283,7 @@ const ctx = defaultContext();
  * otherwise. Everything else, run inside a checkout linked to a project, uses the account that
  * project belongs to, so nobody picks accounts by hand.
  */
-const MACHINE_WIDE = new Set(["setup", "init", "import", "apply", "mcp", "skill", "skills", "tool", "login", "logout", "account", "accounts", "background", "backups", "restore", "profile", "profiles", "history", "resume", "hook", "context", "memory", "agent", "sessions", "webhook", "webhooks", "usage"]);
+const MACHINE_WIDE = new Set(["setup", "init", "import", "apply", "mcp", "skill", "skills", "use", "tool", "login", "logout", "account", "accounts", "background", "backups", "restore", "profile", "profiles", "history", "resume", "hook", "context", "team", "teams", "memory", "agent", "sessions", "webhook", "webhooks", "usage"]);
 
 /** Take `--account <email>` out of argv, anywhere before `--` (the command `0b exec` runs keeps its own flags). */
 function takeAccountFlag(argv: string[]): string | undefined {
@@ -304,7 +341,7 @@ function runImport(m: Manifest, only?: ToolId[]) {
 async function apply(values: { only?: string; yes?: boolean; "dry-run"?: boolean; "no-diff"?: boolean }) {
   const m = requireManifest(ctx);
   const s = store();
-  const plan = planApply(ctx, m, loadState(ctx), s, parseTools(values.only));
+  const plan = planApply(ctx, m, loadState(ctx), s, parseTools(values.only), { projects: true });
   if (!plan.changes.length) {
     printWarnings(ctx, plan);
     console.log(c.green("Everything is in sync."));
@@ -321,20 +358,42 @@ async function apply(values: { only?: string; yes?: boolean; "dry-run"?: boolean
   console.log(c.dim("Restart running agent sessions to pick up changes."));
 }
 
+/**
+ * `--project`: the commands work on this repo's project scope instead of the global list, and the
+ * checkout is registered so `0b apply` writes into it (and every other registered clone).
+ */
+function scopeOf(m: Manifest, project: boolean | undefined): { scope: Pick<Manifest, "mcpServers" | "skills">; at: { root: string; repo: string } | null } {
+  if (!project) return { scope: m, at: null };
+  const at = here();
+  return { scope: projectScope(m, at.repo, true), at };
+}
+
+function registerCheckout(at: { root: string; repo: string } | null) {
+  if (!at) return;
+  const st = loadState(ctx);
+  (st.projects ??= {})[at.root] ??= { repo: at.repo, managed: {} };
+  saveState(ctx, st);
+}
+
+const syncHint = (at: { repo: string } | null) => (at ? `Run ${c.cyan("0b apply")} to write it into this repo's checkouts (${at.repo}).` : `Run ${c.cyan("0b apply")} to sync.`);
+
 function mcp(args: string[], values: Record<string, any>) {
   const [sub, name] = args;
   const m = requireManifest(ctx);
-  const get = () => m.mcpServers[name!] ?? die(`no MCP server "${name}"`);
+  const { scope, at } = scopeOf(m, values.project);
+  const get = () => scope.mcpServers[name!] ?? die(`no MCP server "${name}"${at ? ` in ${at.repo}` : ""}`);
   switch (sub) {
     case undefined:
     case "list":
-      for (const [n, s] of Object.entries(m.mcpServers).sort(([a], [b]) => a.localeCompare(b))) {
+      if (at && !Object.keys(scope.mcpServers).length) console.log(c.dim(`  none for ${at.repo} yet: 0b mcp add <name> --project …, or 0b project import`));
+      for (const [n, s] of Object.entries(scope.mcpServers).sort(([a], [b]) => a.localeCompare(b))) {
         const tags = [s.enabled === false && "disabled", s.targets && `only ${s.targets.join(",")}`].filter(Boolean).join(" ");
         console.log(`  ${n.padEnd(22)} ${c.dim(s.transport.padEnd(6))} ${where(s, 80)} ${c.yellow(tags)}`);
       }
       return;
     case "add": {
       if (!name) die("usage: 0b mcp add <name> ...");
+      if (at && name === LINK_SERVER) die(`"${LINK_SERVER}" is the project endpoint 0b project link writes; pick another name`);
       const cmd = args.slice(2);
       const entry: McpServer = values.url
         ? { transport: /\/sse\/?$/.test(values.url) ? "sse" : "http", url: values.url, headers: kv(values.header, "--header") }
@@ -342,12 +401,12 @@ function mcp(args: string[], values: Record<string, any>) {
           ? { transport: "stdio", command: cmd[0], args: cmd.slice(1), env: kv(values.env, "--env") }
           : die("give --url <url> or -- <command> [args...]");
       if (values.only) entry.targets = parseTools(values.only);
-      m.mcpServers[name] = JSON.parse(JSON.stringify(entry));
+      scope.mcpServers[name] = JSON.parse(JSON.stringify(entry));
       break;
     }
     case "remove":
       get();
-      delete m.mcpServers[name!];
+      delete scope.mcpServers[name!];
       break;
     case "enable":
       delete get().enabled;
@@ -359,23 +418,59 @@ function mcp(args: string[], values: Record<string, any>) {
       die(`unknown subcommand "mcp ${sub}"`);
   }
   saveManifest(ctx, m);
-  console.log(`${c.green("✓")} mcp ${sub} ${name}. Run ${c.cyan("0b apply")} to sync.`);
+  registerCheckout(at);
+  console.log(`${c.green("✓")} mcp ${sub} ${name}${at ? ` (${at.repo})` : ""}. ${syncHint(at)}`);
 }
 
-function skill(args: string[]) {
+/**
+ * `0b skill add <folder>`: a skill written by hand (or downloaded) joins the synced ones. It's
+ * checked first (checkSkill), copied into the store under its own name, and from there `0b apply`
+ * puts it in every tool, as if it had been imported from one.
+ */
+function addSkill(m: Manifest, scope: Pick<Manifest, "skills">, at: { root: string; repo: string } | null, path: string | undefined, values: Record<string, any>) {
+  if (!path) die("usage: 0b skill add <folder> [--only t,...] [--project] [--force]   (the folder with SKILL.md in it)");
+  let dir = resolve(path);
+  if (basename(dir) === "SKILL.md") dir = dirname(dir);
+  let check: SkillCheck;
+  try {
+    check = checkSkill(dir);
+  } catch (e) {
+    die(e instanceof Error ? e.message : String(e));
+  }
+  const name = check.name;
+  const dst = join(at ? projectSkillsDir(ctx, at.repo) : paths(ctx).skills, name);
+  const had = scope.skills[name];
+  const same = existsSync(dst) && sameSkill(dir, dst);
+  if (had && existsSync(dst) && !same && !values.force) die(`there's already a skill "${name}" with other content (0b skill list${at ? " --project" : ""}): --force replaces it`);
+  // A folder added from the store itself is already in place: copying would delete it first.
+  if (resolve(dir) !== resolve(dst) && !same) copySkill(dir, dst);
+  scope.skills[name] = { ...(had ?? {}), ...(values.only ? { targets: parseTools(values.only) } : {}) };
+  saveManifest(ctx, m);
+  registerCheckout(at);
+  for (const w of check.warnings) console.log(`  ${c.yellow("!")} ${w}`);
+  const kept = readSkill(dst, name)?.skipped.filter((s) => /credential/.test(s.why)) ?? [];
+  if (!at && kept.length) console.log(`  ${c.yellow("!")} ${kept.map((s) => s.path).join(", ")} look${kept.length === 1 ? "s" : ""} like ${kept.length === 1 ? "it holds" : "they hold"} a credential: synced to your tools here, but never uploaded by 0b context push`);
+  console.log(`${c.green("✓")} skill ${c.bold(name)} ${had ? (same ? "is already in" : "replaced in") : "added to"} ${at ? `${at.repo}'s skills` : "your skills"}${c.dim(` (${check.description.length > 60 ? check.description.slice(0, 59) + "…" : check.description})`)}. ${syncHint(at)}`);
+}
+
+function skill(args: string[], values: Record<string, any>) {
   const [sub, name] = args;
   const m = requireManifest(ctx);
-  const get = () => m.skills[name!] ?? die(`no skill "${name}"`);
+  const { scope, at } = scopeOf(m, values.project);
+  const get = () => scope.skills[name!] ?? die(`no skill "${name}"${at ? ` in ${at.repo}` : ""}`);
   switch (sub) {
     case undefined:
     case "list":
-      for (const [n, s] of Object.entries(m.skills).sort(([a], [b]) => a.localeCompare(b))) {
+      if (at && !Object.keys(scope.skills).length) console.log(c.dim(`  none for ${at.repo} yet: 0b skill add <folder> --project, or 0b project import`));
+      for (const [n, s] of Object.entries(scope.skills).sort(([a], [b]) => a.localeCompare(b))) {
         console.log(`  ${n.padEnd(28)} ${c.yellow([s.enabled === false && "disabled", s.targets && `only ${s.targets.join(",")}`].filter(Boolean).join(" "))}`);
       }
       return;
+    case "add":
+      return addSkill(m, scope, at, name, values);
     case "remove":
       get();
-      delete m.skills[name!];
+      delete scope.skills[name!];
       break;
     case "enable":
       delete get().enabled;
@@ -387,7 +482,8 @@ function skill(args: string[]) {
       die(`unknown subcommand "skill ${sub}"`);
   }
   saveManifest(ctx, m);
-  console.log(`${c.green("✓")} skill ${sub} ${name}. Run ${c.cyan("0b apply")} to sync.`);
+  registerCheckout(at);
+  console.log(`${c.green("✓")} skill ${sub} ${name}${at ? ` (${at.repo})` : ""}. ${syncHint(at)}`);
 }
 
 function tool(args: string[]) {
@@ -472,6 +568,10 @@ async function main() {
       json: { type: "boolean" },
       kind: { type: "string" },
       "include-logs": { type: "boolean" },
+      team: { type: "boolean" },
+      project: { type: "boolean" },
+      shell: { type: "boolean" },
+      dir: { type: "string" },
     },
   });
   const [cmd, ...rest] = positionals;
@@ -510,6 +610,8 @@ async function main() {
     case "profile":
     case "profiles":
       return profileCommand(ctx, rest);
+    case "use":
+      return useCommand(ctx, rest, { tool: values.tool, dir: values.dir, global: values.global, shell: values.shell });
     case "init": {
       if (interactive() && !values.yes) return initTui(ctx);
       mkdirSync(ctx.storeDir, { recursive: true, mode: 0o700 });
@@ -538,7 +640,7 @@ async function main() {
       return mcp(rest, values);
     case "skill":
     case "skills":
-      return skill(rest);
+      return skill(rest, values);
     case "secret":
     case "secrets":
       return secretCommand(ctx, rest, { env: values.env?.at(-1), global: values.global, delete: values.delete, yes: values.yes, variable: values.variable, secret: values.secret, note: values.note, file: values.file, only: values.only, dryRun: values["dry-run"] });
@@ -573,6 +675,9 @@ async function main() {
       return hookCommand(ctx, rest);
     case "context":
       return contextCommand(ctx, rest, { force: values.force, quiet: values.quiet, yes: values.yes });
+    case "team":
+    case "teams":
+      return teamCommand(ctx, rest);
     case "memory":
       return memoryCommand(ctx, rest, { tags: values.tags, yes: values.yes });
     case "agent":
@@ -615,6 +720,7 @@ async function main() {
       else console.log(`Run ${c.cyan("0b apply --yes")} to point your AI tools at it.`);
       return;
     case "connect":
+      if (values.team) return connectTeam(ctx, { yes: values.yes });
       return connectCommand(ctx, rest[0], rest[1], {
         headers: kv(values.header, "--header"),
         label: values.label,
@@ -626,7 +732,11 @@ async function main() {
         allowWrite: values["allow-write"],
         yes: values.yes,
         app: values.app,
+        readOnly: values["read-only"],
       });
+    case "connection":
+    case "connections":
+      return connectionCommand(ctx, rest, { label: values.label, json: values.json });
     case "key":
       return keyCommand(ctx, rest[0]);
     case "rename":

@@ -46,6 +46,7 @@ import { installBackground, runBackground } from "./background.ts";
 import { secretCommand, vaultCommand } from "./vault.ts";
 import { projectCommand } from "./project.ts";
 import { clipCommand } from "./clip.ts";
+import { updateCommand } from "./update.ts";
 
 declare const VERSION: string;
 const version = typeof VERSION !== "undefined" ? VERSION : "dev";
@@ -118,6 +119,7 @@ ${c.bold("Usage")}
   0b clip paste [dir]          Save what's waiting here (over SSH too) and print the paths
   0b background [on|off]       Run (or schedule every 30 min) the history and personal file sync
   0b tool enable|disable <tool>
+  0b update [--check]          Install the newest 0b (and restart its background jobs); --check only looks
   0b login [--web]             Sign in with a one-time code (works over SSH too); --web uses a browser redirect
                                instead. Every tool then gets one MCP endpoint
   0b logout [email] [--all]    Revoke this device and sign out (with several accounts, say which)
@@ -365,6 +367,7 @@ async function main() {
       only: { type: "string" },
       yes: { type: "boolean", short: "y" },
       "dry-run": { type: "boolean" },
+      check: { type: "boolean" },
       "no-diff": { type: "boolean" },
       url: { type: "string" },
       header: { type: "string", multiple: true },
@@ -407,6 +410,9 @@ async function main() {
   }
 
   switch (cmd) {
+    case "update":
+    case "upgrade":
+      return updateCommand(ctx, version, { check: values.check });
     case "setup":
       return setup(ctx, {
         yes: values.yes,

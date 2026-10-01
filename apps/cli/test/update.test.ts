@@ -14,5 +14,7 @@ describe("0b update", () => {
     expect(installer("/Users/me/.npm-global/lib/node_modules/0bridge/dist/0b.js")[0]).toBe("npm");
     expect(installer("/Users/me/.bun/install/global/node_modules/0bridge/dist/0b.js")[0]).toBe("bun");
     expect(installer("/Users/me/Library/pnpm/global/5/node_modules/0bridge/dist/0b.js")[0]).toBe("pnpm");
+    // The exact version just checked, not "latest" (npm may still have the old one cached).
+    expect(installer("/usr/local/lib/node_modules/0bridge/dist/0b.js", "0.2.17")).toEqual(["npm", "install", "-g", "0bridge@0.2.17", "--prefer-online"]);
   });
 });

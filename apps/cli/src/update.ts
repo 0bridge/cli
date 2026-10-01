@@ -17,12 +17,17 @@ export function isNewer(latest: string, current: string): boolean {
   return false;
 }
 
-/** The package manager that installed this copy, from where it lives (bun and pnpm keep global packages in their own folders). */
-export function installer(scriptPath: string): string[] {
-  if (/[\\/]\.bun[\\/]/.test(scriptPath)) return ["bun", "add", "-g", "0bridge@latest"];
-  if (/[\\/]pnpm[\\/]/.test(scriptPath)) return ["pnpm", "add", "-g", "0bridge@latest"];
-  if (/[\\/]\.?yarn[\\/]/.test(scriptPath)) return ["yarn", "global", "add", "0bridge@latest"];
-  return ["npm", "install", "-g", "0bridge@latest"];
+/**
+ * The package manager that installed this copy, from where it lives (bun and pnpm keep global
+ * packages in their own folders), installing exactly `version`: right after a release, npm's
+ * cached idea of "latest" can still be the old one.
+ */
+export function installer(scriptPath: string, version = "latest"): string[] {
+  const pkg = `0bridge@${version}`;
+  if (/[\\/]\.bun[\\/]/.test(scriptPath)) return ["bun", "add", "-g", pkg];
+  if (/[\\/]pnpm[\\/]/.test(scriptPath)) return ["pnpm", "add", "-g", pkg];
+  if (/[\\/]\.?yarn[\\/]/.test(scriptPath)) return ["yarn", "global", "add", pkg];
+  return ["npm", "install", "-g", pkg, "--prefer-online"];
 }
 
 /** Background jobs that keep running (clipboard answers and sync): restarted so they run the new version. The 30-minute sync starts fresh each time. */
@@ -42,7 +47,7 @@ export async function updateCommand(ctx: Context, current: string, opts: { check
   if (!isNewer(latest, current)) return console.log(`${c.green("✓")} 0b ${current} is the newest version`);
   if (opts.check) return console.log(`0b ${latest} is out (this is ${current}). Run ${c.cyan("0b update")}.`);
 
-  const cmd = installer(process.argv[1] ?? "");
+  const cmd = installer(process.argv[1] ?? "", latest);
   console.log(`Updating 0b ${current} → ${latest}  ${c.dim(`(${cmd.join(" ")})`)}`);
   const r = spawnSync(cmd[0]!, cmd.slice(1), { stdio: "inherit" });
   if (r.error) fail(`${cmd[0]} isn't on this machine's PATH; run ${cmd.join(" ")} with the package manager you installed 0b with`);

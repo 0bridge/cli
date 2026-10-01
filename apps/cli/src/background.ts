@@ -48,7 +48,7 @@ export function installAgent(ctx: Context, label: string, args: string[] | null,
   if (real) spawnSync("launchctl", ["unload", path], { stdio: "ignore" });
   if (!args) {
     rmSync(path, { force: true });
-    const others = ["dev.0bridge.background", "dev.0bridge.clip"].some((l) => existsSync(join(ctx.home, "Library", "LaunchAgents", `${l}.plist`)));
+    const others = ["dev.0bridge.background", "dev.0bridge.clip", "dev.0bridge.clipsync"].some((l) => existsSync(join(ctx.home, "Library", "LaunchAgents", `${l}.plist`)));
     if (!others) rmSync(join(ctx.storeDir, "bin", "0bridge"), { force: true });
     return path;
   }

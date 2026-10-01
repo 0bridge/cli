@@ -114,6 +114,8 @@ ${c.bold("Usage")}
                                 to your agents: over SSH or anywhere, they read it once with bridge__clipboard
                                 within 10 minutes. Also: clip status, clip clear
   0b clip listen on|off        Let agents ask this Mac for its clipboard: a dialog asks you each time
+  0b clip sync on|off          On a Mac: images you copy (screenshots, copied images) go to your agents as you copy them
+  0b clip paste [dir]          Save what's waiting here (over SSH too) and print the paths
   0b background [on|off]       Run (or schedule every 30 min) the history and personal file sync
   0b tool enable|disable <tool>
   0b login [--web]             Sign in with a one-time code (works over SSH too); --web uses a browser redirect

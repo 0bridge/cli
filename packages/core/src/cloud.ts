@@ -315,7 +315,7 @@ export class CloudClient {
   }
   // ── Clipboard relay ──
   /** Send something for an agent to read once (bridge__clipboard), within 10 minutes. */
-  sendClip(item: { name: string; mime: string; data: string; from?: string }) {
+  sendClip(item: { name: string; mime: string; data: string; from?: string; sync?: boolean }) {
     return this.req<{ id: string; name: string; mime: string; size: number; at: number }>("/clip", { method: "POST", body: JSON.stringify(item) });
   }
   clipsWaiting() {
@@ -323,6 +323,10 @@ export class CloudClient {
   }
   clearClips() {
     return this.req<{ deleted: number }>("/clip", { method: "DELETE" });
+  }
+  /** Take what's waiting (each item once, like an agent's read), with its data in base64. */
+  takeClips() {
+    return this.req<{ id: string; name: string; mime: string; size: number; at: number; from?: string; data: string }[]>("/clip/take", { method: "POST" });
   }
   // ── Projects ──
   /** With `suggest`, also repos you work in that aren't projects yet (slower). */

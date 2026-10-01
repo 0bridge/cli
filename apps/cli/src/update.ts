@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { Context } from "@0bridge/core";
+import { stopReceiver } from "./clip.ts";
 import { c } from "./ui.ts";
 
 function fail(msg: string): never {
@@ -60,6 +61,8 @@ export async function updateCommand(ctx: Context, current: string, opts: { check
     for (const label of RUNNING_AGENTS)
       if (existsSync(join(ctx.home, "Library", "LaunchAgents", `${label}.plist`)) && spawnSync("launchctl", ["kickstart", "-k", `gui/${process.getuid()}/${label}`], { stdio: "ignore" }).status === 0)
         restarted.push(label === "dev.0bridge.clip" ? "clip listen" : "clip sync");
+  // The ⌃V receiver on a server: the next ⌃V starts the new one.
+  if (stopReceiver(ctx)) restarted.push("the clipboard receiver");
   if (now !== latest) {
     // The package manager put the new version somewhere this `0b` doesn't run from (two installs, or a PATH that points elsewhere).
     console.log(c.yellow(`Installed 0b ${latest}, but the 0b here is still ${now} (${process.argv[1]}). Check which one your PATH finds: ${c.cyan("which -a 0b")}.`));

@@ -319,7 +319,7 @@ export async function projectCommand(ctx: Context, args: string[], opts: Project
       const r = await client.setConnectionProjects(conn.id, next);
       if (sub === "use")
         console.log(
-          `${c.green("✓")} ${r.display} is limited to ${current.length ? "its projects, now including " : ""}${c.bold(project.repo)}: agents elsewhere (and apps like claude.ai) don't see it anymore.`,
+          `${c.green("✓")} ${r.display} is limited to ${current.length ? "its projects, now including " : ""}${c.bold(project.repo)}: agents elsewhere (and apps like Claude) don't see it anymore.`,
         );
       else console.log(next.length ? `${c.green("✓")} ${r.display} isn't used in ${project.repo} anymore` : `${c.yellow("●")} ${r.display} is available everywhere again (it was limited to ${project.repo} only)`);
       return;

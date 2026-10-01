@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { basename, delimiter, extname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -169,7 +169,7 @@ export async function clipCommand(ctx: Context, args: string[]): Promise<void> {
   }
   if (sub === "sync") {
     if (args[1] === "on" || args[1] === "off") return installSync(ctx, args[1] === "on");
-    return sync(ctx);
+    return process.platform === "darwin" ? sync(ctx) : receive(ctx);
   }
   if (sub === "paste") return paste(ctx, args[1]);
   if (sub === "shims") return installPasteShims(ctx, args[1] !== "off");
@@ -247,7 +247,6 @@ for (;;) {
 
 /** Send each image copied on this Mac as it's copied; the newest replaces the one before it. */
 async function sync(ctx: Context): Promise<void> {
-  if (process.platform !== "darwin") fail("clipboard sync runs on a Mac (the computer you copy on); agents here read what it sends");
   const { client } = cloudClient(ctx);
   const dir = mkdtempSync(join(tmpdir(), "0b-clipsync-"));
   const from = hostname().replace(/\.local$/, "");
@@ -280,12 +279,9 @@ async function sync(ctx: Context): Promise<void> {
   }
 }
 
-/** Keep `0b clip sync` running at login (macOS LaunchAgent). */
+/** Keep `0b clip sync` running at login (macOS LaunchAgent); elsewhere it's the receiving end, which ⌃V starts. */
 function installSync(ctx: Context, on: boolean): void {
-  if (process.platform !== "darwin") {
-    console.log("Clipboard sync belongs on the computer you copy on (your Mac): run `0b clip sync on` there. Agents here read what it sends; `0b clip paste` saves it here.");
-    return;
-  }
+  if (process.platform !== "darwin") return installPasteShims(ctx, on);
   installAgent(ctx, "dev.0bridge.clipsync", on ? ["clip", "sync"] : null, { keepAlive: true });
   console.log(
     on
@@ -326,6 +322,8 @@ function installPasteShims(ctx: Context, on: boolean): void {
     // Ours only, wherever they are.
     for (const d of new Set([join(ctx.storeDir, "bin"), ...(process.env.PATH ?? "").split(delimiter)]))
       for (const n of names) if (d && isOurShim(join(d, n))) rmSync(join(d, n), { force: true });
+    stopReceiver(ctx);
+    rmSync(join(clipDir(ctx), "image"), { force: true });
     return console.log(`${c.green("✓")} removed the xclip and wl-paste stand-ins`);
   }
   const { dir, onPath } = shimDir(ctx);
@@ -339,6 +337,7 @@ function installPasteShims(ctx: Context, on: boolean): void {
   console.log(`${c.green("✓")} ⌃V in Claude Code on this machine now pastes the image you last copied on your Mac (with ${c.cyan("0b clip sync on")} there). ${c.dim(`(${dir})`)}`);
   if (!onPath) console.log(`Put ${dir} first in your PATH (in ~/.zshrc or ~/.bashrc), then start Claude Code again:\n  ${c.cyan(`export PATH="${dir}:$PATH"`)}`);
   else console.log(c.dim("Claude Code sessions already running use it on their next ⌃V."));
+  console.log(c.dim("The first ⌃V starts a small receiver here, so each image you copy is already on this machine when you paste."));
   console.log(c.dim("With a Korean (or other non-English) input source on, ⌃V can arrive as a letter: switch to English first."));
 }
 
@@ -368,15 +367,184 @@ async function pasteShim(ctx: Context, tool: "xclip" | "wl-paste", argv: string[
     wantsType = value(["-t", "--type"]);
   }
   if (!wantsList && !wantsType?.startsWith("image/")) passThrough();
-  const { client } = cloudClient(ctx);
-  const img = await client.latestImage().catch(() => null);
+  startReceiver(ctx);
+  let img = readImage(ctx);
+  // No receiver connected (just started, or offline): ask 0bridge, once per paste. Claude Code asks
+  // for the list of types and then for the image; the second call finds this one saved.
+  if (!img && !receiverLive(ctx)) {
+    const got = await cloudClient(ctx).client.latestImage().catch(() => null);
+    if (got) img = saveImage(ctx, got, Date.now() + ASKED_MS);
+  }
   if (!img) passThrough();
   if (wantsList) {
     process.stdout.write(`${img!.mime}\n`);
     return;
   }
   if (wantsType !== img!.mime) passThrough();
-  process.stdout.write(Buffer.from(img!.data, "base64"));
+  process.stdout.write(img!.data);
+}
+
+// ── The receiving end (0b clip sync on the machine you paste on) ─────────────
+//
+// Keeps a socket to 0bridge open; each image copied on the Mac arrives as it's copied and is kept
+// in ~/.0bridge/clip/image (only you can read it) until it expires there, so ⌃V reads a file.
+
+/** How long an image asked for over the network answers ⌃V without asking again (both calls of one paste). */
+const ASKED_MS = 5_000;
+/** The receiver pings this often; ⌃V trusts what it holds while it heard back within LIVE_MS. */
+const PING_MS = 30_000;
+const LIVE_MS = 75_000;
+const CLIP_SECONDS = 600;
+
+const clipDir = (ctx: Context) => join(ctx.storeDir, "clip");
+const pidFile = (ctx: Context) => join(clipDir(ctx), "receiver.pid");
+
+function alive(pid: number): boolean {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+const receiverPid = (ctx: Context) => {
+  try {
+    return Number(readFileSync(pidFile(ctx), "utf8")) || 0;
+  } catch {
+    return 0;
+  }
+};
+/** Running and connected: it touches its pid file on every message from 0bridge. */
+function receiverLive(ctx: Context): boolean {
+  try {
+    return alive(receiverPid(ctx)) && Date.now() - statSync(pidFile(ctx)).mtimeMs < LIVE_MS;
+  } catch {
+    return false;
+  }
+}
+
+/** The image ⌃V pastes, kept as one line of JSON (what it is, until when) and then its bytes. */
+interface Kept {
+  id: string;
+  mime: string;
+  until: number;
+  data: Buffer;
+}
+function readImage(ctx: Context): Kept | null {
+  try {
+    const buf = readFileSync(join(clipDir(ctx), "image"));
+    const nl = buf.indexOf(10);
+    const head = JSON.parse(buf.subarray(0, nl).toString("utf8")) as Omit<Kept, "data">;
+    return head.until > Date.now() ? { ...head, data: buf.subarray(nl + 1) } : null;
+  } catch {
+    return null;
+  }
+}
+function saveImage(ctx: Context, img: { id: string; mime: string; data: string }, until: number): Kept {
+  const dir = clipDir(ctx);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const kept = { id: img.id, mime: img.mime, until, data: Buffer.from(img.data, "base64") };
+  const tmp = join(dir, `image.${process.pid}`);
+  writeFileSync(tmp, Buffer.concat([Buffer.from(`${JSON.stringify({ id: kept.id, mime: kept.mime, until })}\n`), kept.data]), { mode: 0o600 });
+  renameSync(tmp, join(dir, "image"));
+  return kept;
+}
+
+/** Start the receiver in the background if it isn't running (the shims call this on every ⌃V). */
+function startReceiver(ctx: Context): void {
+  if (alive(receiverPid(ctx))) return;
+  mkdirSync(clipDir(ctx), { recursive: true, mode: 0o700 });
+  const log = openSync(join(ctx.storeDir, "clipsync.log"), "a");
+  spawn(process.execPath, [process.argv[1]!, "clip", "sync"], { detached: true, stdio: ["ignore", log, log] }).unref();
+}
+
+/** Stop it (`0b clip shims off`, `0b update`); the next ⌃V starts the installed version. */
+export function stopReceiver(ctx: Context): boolean {
+  const pid = receiverPid(ctx);
+  if (!alive(pid)) return false;
+  try {
+    process.kill(pid);
+  } catch {}
+  rmSync(pidFile(ctx), { force: true });
+  return true;
+}
+
+async function receive(ctx: Context): Promise<void> {
+  const { cfg, client } = cloudClient(ctx);
+  const token = openSecretStore(ctx.storeDir).get(deviceTokenKey(cfg));
+  if (!token) fail("sign in first: 0b login");
+  if (typeof WebSocket === "undefined") fail("this needs Node 22 or newer (WebSocket)");
+  const dir = clipDir(ctx);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // One receiver per machine: two ⌃V calls can start one each at once; the second one leaves.
+  const claim = () => {
+    try {
+      writeFileSync(pidFile(ctx), String(process.pid), { flag: "wx" });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (!claim() && (alive(receiverPid(ctx)) || (rmSync(pidFile(ctx), { force: true }), !claim()))) return console.log(c.dim("Already receiving on this machine."));
+  const mine = () => receiverPid(ctx) === process.pid;
+  const bye = () => {
+    if (mine()) rmSync(pidFile(ctx), { force: true });
+    process.exit(0);
+  };
+  process.on("SIGTERM", bye);
+  process.on("SIGINT", bye);
+  const seen = (ok: boolean) => {
+    if (!mine()) bye(); // stopped, or replaced by another one
+    const t = ok ? new Date() : new Date(0);
+    utimesSync(pidFile(ctx), t, t);
+  };
+  const stamp = () => new Date().toISOString().slice(11, 19);
+  const keep = (img: { id: string; mime: string; data: string; at: number }) => {
+    saveImage(ctx, img, img.at + CLIP_SECONDS * 1000);
+    console.log(`${stamp()} received ${img.mime} (${kb(Math.floor((img.data.length * 3) / 4))})`);
+  };
+  const refresh = async () => {
+    const img = await client.latestImage().catch(() => undefined);
+    if (img) keep(img);
+    else if (img === null) rmSync(join(dir, "image"), { force: true });
+  };
+  // An image that expired there goes from here too.
+  setInterval(() => existsSync(join(dir, "image")) && !readImage(ctx) && rmSync(join(dir, "image"), { force: true }), PING_MS);
+  const url = `${cfg.server.replace(/\/+$/, "").replace(/^http/, "ws")}/api/clip/watch`;
+  let delay = 1000;
+  for (;;) {
+    await new Promise<void>((resolve) => {
+      const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${token}` } } as never);
+      const ping = setInterval(() => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify({ type: "ping" })), PING_MS);
+      ws.onopen = async () => {
+        delay = 1000;
+        console.log(`${stamp()} receiving images copied on your Mac`);
+        // Whatever arrived while this wasn't connected; ⌃V trusts this machine's copy from here on.
+        await refresh();
+        seen(true);
+      };
+      ws.onmessage = async (e) => {
+        let m: { type?: string; id?: string; mime?: string; data?: string; at?: number };
+        try {
+          m = JSON.parse(String(e.data));
+        } catch {
+          return;
+        }
+        if (m.type === "image" && m.id && m.mime && typeof m.data === "string" && m.at) keep(m as never);
+        if (m.type === "changed") await refresh();
+        seen(true);
+      };
+      ws.onclose = () => {
+        clearInterval(ping);
+        seen(false);
+        resolve();
+      };
+      ws.onerror = () => {};
+    });
+    await new Promise((r) => setTimeout(r, delay));
+    delay = Math.min(delay * 2, 60_000);
+  }
 }
 
 // ── Answering agents' requests (0b clip listen) ─────────────

@@ -15,13 +15,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
+      # No registry-url: setup-node would write an .npmrc with a placeholder token, and publishing
+      # here authenticates with GitHub's OIDC token instead (npm 11.5.1 or newer).
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
       - run: bun install --frozen-lockfile
       - run: bun test
       - name: The tag matches the package version
         run: test "v$(node -p "require('./apps/cli/package.json').version")" = "$GITHUB_REF_NAME"
-      - run: npm publish --provenance --access public
+      - run: npm publish --provenance --access public --loglevel verbose
         working-directory: apps/cli

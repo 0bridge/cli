@@ -1,8 +1,9 @@
-# The history redactor's tests feed it key-shaped fakes (a JWT from jwt.io, "rk_live_abcdef123456")
-# to check they get masked. Nothing in them is a real credential.
+# The history redactor's and vault notes' tests feed them key-shaped fakes (a JWT from jwt.io,
+# "rk_live_abcdef123456", made-up R2 and Cloudflare-looking strings) to check they get caught.
+# Nothing in them is a real credential.
 [extend]
 useDefault = true
 
 [allowlist]
 description = "fake credentials in the redactor's tests"
-paths = ['''packages/core/test/history\.test\.ts''']
+paths = ['''packages/core/test/history\.test\.ts''', '''packages/core/test/notes\.test\.ts''']

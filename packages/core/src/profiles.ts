@@ -1,8 +1,8 @@
-import { existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, rmSync, symlinkSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import type { Context } from "./types.ts";
-import { readJson, writeAtomic } from "./util.ts";
+import { isInside, readJson, writeAtomic } from "./util.ts";
 
 /**
  * Per-repo CLI accounts. A profile is a directory used as `XDG_CONFIG_HOME` for the CLIs it
@@ -41,9 +41,36 @@ export interface ProfileConfig {
 
 export const PROFILE_NAME = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 
+export { isInside };
+
 const configPath = (ctx: Context) => join(ctx.storeDir, "profiles.json");
 export const profileDir = (ctx: Context, name: string) => join(ctx.storeDir, "profiles", name);
-const userConfigDir = (ctx: Context) => process.env.XDG_CONFIG_HOME && !process.env.XDG_CONFIG_HOME.startsWith(join(ctx.storeDir, "profiles")) ? process.env.XDG_CONFIG_HOME : join(ctx.home, ".config");
+const userConfigDir = (ctx: Context) => process.env.XDG_CONFIG_HOME && !isInside(join(ctx.storeDir, "profiles"), process.env.XDG_CONFIG_HOME) ? process.env.XDG_CONFIG_HOME : join(ctx.home, ".config");
+
+/**
+ * Put `target` at `p` as a link. Windows lets only administrators (or Developer Mode) make symlinks,
+ * so there a folder becomes a junction (allowed for everyone) and a file a copy, with a warning:
+ * a copy doesn't follow later changes to the original.
+ */
+export function linkOrCopy(target: string, p: string, platform: NodeJS.Platform = process.platform): "link" | "copy" {
+  if (platform !== "win32") {
+    symlinkSync(target, p);
+    return "link";
+  }
+  let dir = false;
+  try {
+    dir = statSync(target).isDirectory();
+  } catch {}
+  try {
+    symlinkSync(target, p, dir ? "junction" : "file");
+    return "link";
+  } catch (e) {
+    if (dir || !["EPERM", "EACCES"].includes((e as NodeJS.ErrnoException).code ?? "")) throw e;
+    copyFileSync(target, p);
+    console.error(`warning: Windows didn't allow a link at ${p}, so it's a copy of ${target}; turn on Developer Mode to keep them linked.`);
+    return "copy";
+  }
+}
 
 export function loadProfiles(ctx: Context): ProfileConfig {
   return readJson<ProfileConfig>(configPath(ctx)) ?? { profiles: {}, repos: [] };
@@ -63,11 +90,11 @@ export function refreshOverlay(ctx: Context, name: string, owned: string[]): str
   for (const e of readdirSync(dir)) {
     const p = join(dir, e);
     if (!lstatSync(p).isSymbolicLink()) continue;
-    if (!wanted.has(e) || readlinkSync(p) !== join(base, e)) rmSync(p);
+    if (!wanted.has(e) || resolve(dir, readlinkSync(p)) !== resolve(base, e)) rmSync(p);
   }
   for (const e of wanted) {
     const p = join(dir, e);
-    if (!existsSync(p) && !isLink(p)) symlinkSync(join(base, e), p);
+    if (!existsSync(p) && !isLink(p)) linkOrCopy(join(base, e), p);
   }
   return dir;
 }

@@ -1,0 +1,18 @@
+{
+  "meta": {
+    "startedAt": 1790251200000,
+    "model": "grok-5"
+  },
+  "conversation": [
+    {
+      "role": "user",
+      "at": 1790251200000,
+      "text": "What does the cache layer do?"
+    },
+    {
+      "role": "assistant",
+      "at": 1790251200000,
+      "text": "It memoises API responses for 60 seconds."
+    }
+  ]
+}

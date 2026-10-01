@@ -6,4 +6,4 @@ useDefault = true
 
 [allowlist]
 description = "fake credentials in the redactor's tests"
-paths = ['''packages/core/test/history\.test\.ts''', '''packages/core/test/notes\.test\.ts''']
+paths = ['''packages/core/test/history\.test\.ts''', '''packages/core/test/notes\.test\.ts''', '''packages/session/test/redact\.test\.ts''']

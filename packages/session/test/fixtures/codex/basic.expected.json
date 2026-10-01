@@ -1,0 +1,21 @@
+{
+  "meta": {
+    "cwd": "/work/acme/api",
+    "startedAt": 1789981200000,
+    "tool": "codex",
+    "branch": "main",
+    "model": "gpt-6-sol"
+  },
+  "conversation": [
+    {
+      "role": "user",
+      "at": 1789981200000,
+      "text": "Add rate limiting to the login endpoint"
+    },
+    {
+      "role": "assistant",
+      "at": 1789981260000,
+      "text": "Added a sliding-window limiter keyed by IP."
+    }
+  ]
+}

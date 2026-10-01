@@ -4,10 +4,10 @@
 export const INSTALL_COMMAND = "npm install -g 0bridge@latest";
 export const SETUP_COMMAND = "0b setup";
 
-/** Paste into Claude Code, Codex or Cursor; the agent installs and sets up 0bridge, the user only approves in the browser. */
+/** Paste into Claude Code, Codex, Cursor or Gemini CLI; the agent installs and sets up 0bridge, the user only approves in the browser. */
 export function agentPrompt(server = "https://0bridge.dev"): string {
   const host = server.replace(/\/+$/, "");
-  return `Set up 0bridge on this machine for me. 0bridge gives all my AI tools (Claude Code, Codex, Cursor) one MCP endpoint, ${host}/mcp, and keeps my service sign-ins (Linear, Notion, …) in the cloud, so I sign in once for every tool.
+  return `Set up 0bridge on this machine for me. 0bridge gives all my AI tools (Claude Code, Codex, Cursor, Gemini CLI) one MCP endpoint, ${host}/mcp, and keeps my service sign-ins (Linear, Notion, …) in the cloud, so I sign in once for every tool.
 
 1. Install the CLI: \`${INSTALL_COMMAND}\` (needs Node 20.12+). Check it with \`0b --version\`.
 2. Run \`0b setup --yes${host === "https://0bridge.dev" ? "" : ` --server ${host}`}\`. It finds the AI tools on this machine, signs me in, and adds 0bridge to each of them, backing up every file it changes.
@@ -22,7 +22,7 @@ Only use the 0b CLI for this; don't edit tool config files by hand.`;
 /** The three steps, for people reading before they run anything. */
 export const HOW_IT_WORKS = [
   { title: "Sign in", text: "`0b setup` opens your browser with a one-time code. Approve it; this machine gets its own token." },
-  { title: "Every AI tool gets 0bridge", text: "Claude Code, Codex and Cursor on this machine get one MCP server and the 0bridge skill, so later requests like \"add the Sentry MCP\" go through 0bridge too. Config files are backed up first." },
+  { title: "Every AI tool gets 0bridge", text: "Claude Code, Codex, Cursor and Gemini CLI on this machine get one MCP server and the 0bridge skill, so later requests like \"add the Sentry MCP\" go through 0bridge too. Config files are backed up first." },
   { title: "Connect services once", text: "`0b connect linear` opens Linear's sign-in. From then on every tool has Linear's tools, as `linear__…`." },
 ];
 
@@ -33,7 +33,7 @@ export const HOW_IT_WORKS = [
  */
 export const BRIDGE_SKILL = `---
 name: 0bridge
-description: Use whenever the user wants to add, connect, remove or rename an MCP server or a service integration (Linear, Notion, Sentry, GitHub, Cloudflare, PostHog, Stripe, any MCP URL), use another account or workspace of a service, share a skill across AI tools, or pick which CLI account (wrangler, gh) a repo uses — and when they ask which tools or accounts are available. 0bridge manages these for every AI tool on this machine (Claude Code, Codex, Cursor) through the \`0b\` CLI.
+description: Use whenever the user wants to add, connect, remove or rename an MCP server or a service integration (Linear, Notion, Sentry, GitHub, Cloudflare, PostHog, Stripe, any MCP URL), use another account or workspace of a service, share a skill across AI tools, or pick which CLI account (wrangler, gh) a repo uses — and when they ask which tools or accounts are available. 0bridge manages these for every AI tool on this machine (Claude Code, Codex, Cursor, Gemini CLI) through the \`0b\` CLI.
 ---
 
 # 0bridge
@@ -169,7 +169,7 @@ The user keeps secrets in their 0bridge vault: encrypted on their machines, per 
 export const PROJECT_PROMPT = `Set up this repo in 0bridge, so agents here get its own connections, secrets and personal files.
 
 1. Run \`0b project\` to see where it stands. If \`0b\` isn't installed or I'm not signed in, set up 0bridge first (\`npm install -g 0bridge@latest\`, then \`0b setup --yes\`).
-2. Run \`0b project link\`. It makes the repo a project and points this clone's Claude Code, Codex and Cursor at it. Tell me which connections agents here will see.
+2. Run \`0b project link\`. It makes the repo a project and points this clone's Claude Code, Codex, Cursor and Gemini CLI at it. Tell me which connections agents here will see.
 3. If the repo has .env files (.env, .env.local, .env.development), run \`0b secret import <file> --dry-run\` for each. It stores nothing and never prints values. Show me the names it lists and ask which to move (keys that point at localhost usually stay in the file), then run \`0b secret import <file> --only <the names I picked>\`. Don't delete the files unless I say so.
 4. If AGENTS.local.md, CLAUDE.local.md or .claude/settings.local.json exist and aren't committed, run \`0b files add\` with them so my other machines get them.
 5. Tell me what changed and what I should do next (for example restart this tool so it picks up the project).`;

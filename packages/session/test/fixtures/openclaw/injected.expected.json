@@ -1,0 +1,19 @@
+{
+  "meta": {
+    "tool": "openclaw",
+    "cwd": "/home/me/.openclaw/workspace",
+    "startedAt": 1790146800000
+  },
+  "conversation": [
+    {
+      "role": "user",
+      "at": 1789981200000,
+      "text": "Is the staging deploy green?"
+    },
+    {
+      "role": "assistant",
+      "at": 1789981200000,
+      "text": "Yes, staging is healthy."
+    }
+  ]
+}

@@ -3,7 +3,7 @@ import { existsSync, lstatSync, realpathSync, mkdirSync, readFileSync, readlinkS
 import { hostname } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { openValue, readJson, repoOf, sealValue, writeAtomic, type CloudClient, type Context, type RemoteFile } from "@0bridge/core";
+import { isInside, openValue, readJson, repoOf, sealValue, writeAtomic, type CloudClient, type Context, type RemoteFile } from "@0bridge/core";
 import { ensureBackground } from "./background.ts";
 import { openVault } from "./vault.ts";
 import { accountForRepo } from "./links.ts";
@@ -109,8 +109,18 @@ function writeLocal(abs: string, kind: "file" | "symlink", body: string) {
   try {
     unlinkSync(abs);
   } catch {}
-  if (kind === "symlink") symlinkSync(body, abs);
-  else {
+  if (kind === "symlink") {
+    const target = resolve(dirname(abs), body);
+    // Windows lets only administrators (or Developer Mode) make symlinks: a copy of what it points to instead.
+    if (process.platform === "win32" && existsSync(target) && !lstatSync(target).isDirectory()) {
+      try {
+        symlinkSync(body, abs, "file");
+      } catch {
+        writeFileSync(abs, readFileSync(target));
+        console.log(c.yellow(`! ${abs} is a symlink on your other machines; Windows didn't allow one here, so it's a copy of ${body} (turn on Developer Mode to keep them linked).`));
+      }
+    } else symlinkSync(body, abs);
+  } else {
     const bytes = Buffer.from(body, "base64");
     // Modes don't sync; a script (#!) comes back runnable, like the status line script it usually is.
     writeFileSync(abs, bytes, bytes.subarray(0, 2).toString() === "#!" ? { mode: 0o755 } : {});
@@ -316,10 +326,10 @@ export interface FilesOptions {
  * files under ~ outside any repo.
  */
 function scopeOf(ctx: Context, p?: string): { repo: string; root: string } {
-  const abs = p ? resolve(p.replace(/^~(?=\/|$)/, ctx.home)) : process.cwd();
+  const abs = p ? resolve(p.replace(/^~(?=[\\/]|$)/, ctx.home)) : process.cwd();
   const dir = p ? dirname(jsonKey(abs)?.file ?? abs) : abs;
   const r = existsSync(dir) ? repoHere(dir) : null;
-  if (r && (!p || !relative(r.root, abs).startsWith(".."))) return r;
+  if (r && (!p || isInside(r.root, abs))) return r;
   // Real paths: the current folder comes back resolved (/private/var/… on macOS), $HOME may not be.
   const real = (x: string) => {
     try {
@@ -328,7 +338,7 @@ function scopeOf(ctx: Context, p?: string): { repo: string; root: string } {
       return x;
     }
   };
-  const under = (x: string) => !relative(real(ctx.home), x).startsWith("..") || !relative(ctx.home, x).startsWith("..");
+  const under = (x: string) => isInside(real(ctx.home), x) || isInside(ctx.home, x);
   if (under(abs) || under(real(dirname(abs)))) return { repo: HOME_REPO, root: ctx.home };
   fail(`${p ?? dir} is neither in a git repo nor in your home folder`);
 }
@@ -340,7 +350,7 @@ function statusLinePaths(ctx: Context): string[] {
   if (!sl) fail(`no statusLine in ${settings} yet. Set one up in Claude Code (/statusline), then run this again`);
   const out = [`${settings}#statusLine`];
   const script = sl.command?.trim().split(/\s+/)[0]?.replace(/^~(?=\/)/, ctx.home).replace(/^\$HOME(?=\/)/, ctx.home);
-  if (script && script.startsWith(ctx.home + "/") && existsSync(script)) out.push(script);
+  if (script && script !== ctx.home && isInside(ctx.home, script) && existsSync(script)) out.push(script);
   if (sl.command?.includes(ctx.home)) console.log(c.yellow(`  The command has ${ctx.home} in it; write it as ~/… so it works on machines with another home folder.`));
   return out;
 }
@@ -355,8 +365,9 @@ export async function filesCommand(ctx: Context, args: string[], opts: FilesOpti
   const v = await vault(ctx);
   const entry = (cfg.repos[here.repo] ??= { files: {}, checkouts: [] });
   const rel = (p: string) => {
-    const r = relative(here.root, resolve(p.replace(/^~(?=\/|$)/, ctx.home)));
-    if (!r || r.startsWith("..")) fail(`${p} isn't inside ${here.root}${here.repo === HOME_REPO ? "" : " (one repo at a time)"}`);
+    const abs = resolve(p.replace(/^~(?=[\\/]|$)/, ctx.home));
+    const r = relative(here.root, abs);
+    if (!r || !isInside(here.root, abs)) fail(`${p} isn't inside ${here.root}${here.repo === HOME_REPO ? "" : " (one repo at a time)"}`);
     return r;
   };
   switch (sub) {

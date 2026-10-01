@@ -1,0 +1,39 @@
+{
+  "meta": {
+    "startedAt": 1790398800000,
+    "title": "Docs site navigation",
+    "model": "gemini-3-pro"
+  },
+  "conversation": [
+    {
+      "role": "user",
+      "at": 1790398800000,
+      "text": "Add a sidebar to the docs"
+    },
+    {
+      "role": "assistant",
+      "at": 1790398830000,
+      "text": "Added a sidebar component."
+    },
+    {
+      "role": "user",
+      "at": 1790413200000,
+      "text": "Resuming: now make it collapsible"
+    },
+    {
+      "role": "assistant",
+      "at": 1790413220000,
+      "text": "Collapsed by default?"
+    },
+    {
+      "role": "user",
+      "at": 1790413220000,
+      "text": "Expanded by default"
+    },
+    {
+      "role": "assistant",
+      "at": 1790413240000,
+      "text": "It starts expanded and remembers the choice."
+    }
+  ]
+}

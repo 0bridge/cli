@@ -1,0 +1,21 @@
+{
+  "meta": {
+    "cwd": "/work/acme/app/web",
+    "startedAt": 1790064000000,
+    "tool": "codex-app",
+    "branch": "feature/cart",
+    "model": "gpt-6"
+  },
+  "conversation": [
+    {
+      "role": "user",
+      "at": 1790064300000,
+      "text": "Continue where we left off: the cart totals."
+    },
+    {
+      "role": "assistant",
+      "at": 1790064360000,
+      "text": "Totals now include tax."
+    }
+  ]
+}

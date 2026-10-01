@@ -1,0 +1,46 @@
+{
+  "sessionId": "66666666-7777-4888-8999-aaaaaaaaaaaa",
+  "projectHash": "f00d",
+  "startTime": "2026-09-25T06:00:00.000Z",
+  "lastUpdated": "2026-09-25T06:02:00.000Z",
+  "messages": [
+    {
+      "id": "m1",
+      "timestamp": "2026-09-25T06:00:00.000Z",
+      "type": "user",
+      "content": "Explain the build script"
+    },
+    {
+      "id": "m2",
+      "timestamp": "2026-09-25T06:00:10.000Z",
+      "type": "gemini",
+      "content": "It bundles src with bun and writes dist/0b.js.",
+      "model": "gemini-3-pro",
+      "tokens": {
+        "input": 10,
+        "output": 20
+      }
+    },
+    {
+      "id": "m3",
+      "timestamp": "2026-09-25T06:02:00.000Z",
+      "type": "user",
+      "content": [
+        {
+          "text": "And the banner?"
+        }
+      ]
+    },
+    {
+      "id": "m4",
+      "timestamp": "2026-09-25T06:02:05.000Z",
+      "type": "gemini",
+      "content": [
+        {
+          "text": "It adds the node shebang."
+        }
+      ],
+      "model": "gemini-3-pro"
+    }
+  ]
+}

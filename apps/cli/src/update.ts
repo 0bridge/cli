@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 import type { Context } from "@0bridge/core";
+import { upgradeBackground } from "./background.ts";
 import { stopReceiver } from "./clip.ts";
+import { restartServices } from "./service.ts";
 import { c } from "./ui.ts";
 
 function fail(msg: string): never {
@@ -31,12 +31,13 @@ export function installer(scriptPath: string, version = "latest"): string[] {
   return ["npm", "install", "-g", pkg, "--prefer-online"];
 }
 
-/** Background jobs that keep running (clipboard answers and sync): restarted so they run the new version. The 30-minute sync starts fresh each time. */
-const RUNNING_AGENTS = ["dev.0bridge.clip", "dev.0bridge.clipsync"];
+/** What the restarted jobs are called here. The periodic sync isn't one: it starts fresh each time. */
+const RUNNING: Record<string, string> = { clip: "clip listen", clipsync: "clip sync", agent: "the agent daemon" };
 
 /**
  * `0b update`: install the newest 0b from npm with the package manager that installed this one,
- * then restart 0bridge's background jobs on this Mac. `--check` only says whether there's one.
+ * then restart 0bridge's background jobs that keep running (macOS, Linux and Windows), so they run
+ * the new version. `--check` only says whether there's one.
  */
 export async function updateCommand(ctx: Context, current: string, opts: { check?: boolean } = {}): Promise<void> {
   const latest = await fetch("https://registry.npmjs.org/0bridge/latest", { headers: { Accept: "application/json" } })
@@ -50,23 +51,22 @@ export async function updateCommand(ctx: Context, current: string, opts: { check
 
   const cmd = installer(process.argv[1] ?? "", latest);
   console.log(`Updating 0b ${current} → ${latest}  ${c.dim(`(${cmd.join(" ")})`)}`);
-  const r = spawnSync(cmd[0]!, cmd.slice(1), { stdio: "inherit" });
+  // npm, pnpm and yarn are .cmd scripts on Windows, which only a shell runs (the arguments are our own).
+  const r = spawnSync(cmd[0]!, cmd.slice(1), { stdio: "inherit", shell: process.platform === "win32" });
   if (r.error) fail(`${cmd[0]} isn't on this machine's PATH; run ${cmd.join(" ")} with the package manager you installed 0b with`);
   if (r.status !== 0)
     fail(`${cmd.join(" ")} failed. If it says EACCES, npm's global folder needs other permissions: see https://docs.npmjs.com/resolving-eacces-permissions-errors-when-installing-packages-globally`);
 
   const now = spawnSync(process.execPath, [process.argv[1]!, "--version"], { encoding: "utf8" }).stdout?.trim() || latest;
-  const restarted: string[] = [];
-  if (process.platform === "darwin" && typeof process.getuid === "function")
-    for (const label of RUNNING_AGENTS)
-      if (existsSync(join(ctx.home, "Library", "LaunchAgents", `${label}.plist`)) && spawnSync("launchctl", ["kickstart", "-k", `gui/${process.getuid()}/${label}`], { stdio: "ignore" }).status === 0)
-        restarted.push(label === "dev.0bridge.clip" ? "clip listen" : "clip sync");
-  // The ⌃V receiver on a server: the next ⌃V starts the new one.
-  if (stopReceiver(ctx)) restarted.push("the clipboard receiver");
   if (now !== latest) {
     // The package manager put the new version somewhere this `0b` doesn't run from (two installs, or a PATH that points elsewhere).
     console.log(c.yellow(`Installed 0b ${latest}, but the 0b here is still ${now} (${process.argv[1]}). Check which one your PATH finds: ${c.cyan("which -a 0b")}.`));
     return;
   }
+  // The jobs run the 0bridge script, which runs whatever 0b is installed: restart the ones that keep running, and move an older periodic job to today's schedule.
+  upgradeBackground(ctx);
+  const restarted = restartServices(ctx).map((n) => RUNNING[n] ?? n);
+  // The ⌃V receiver on a server isn't a service: stopping it is enough, the next ⌃V starts the new one.
+  if (stopReceiver(ctx)) restarted.push("the clipboard receiver");
   console.log(`${c.green("✓")} 0b ${now}${restarted.length ? c.dim(` · restarted ${restarted.join(" and ")}`) : ""}`);
 }

@@ -1,0 +1,15 @@
+{
+  "name": "@0bridge/session",
+  "version": "0.1.0",
+  "private": true,
+  "description": "0b.session/1: an open schema for AI agent and chat sessions, with pure converters from each vendor's logs.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./redact": "./src/redact.ts",
+    "./convert": "./src/convert/index.ts",
+    "./dti": "./src/export/dti.ts",
+    "./schema/session-1.json": "./schema/session-1.json"
+  },
+  "license": "Apache-2.0"
+}

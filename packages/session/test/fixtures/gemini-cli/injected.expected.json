@@ -1,0 +1,18 @@
+{
+  "meta": {
+    "startedAt": 1790319600000,
+    "model": "gemini-3-flash"
+  },
+  "conversation": [
+    {
+      "role": "user",
+      "at": 1790319605000,
+      "text": "Run the tests"
+    },
+    {
+      "role": "assistant",
+      "at": 1790319660000,
+      "text": "All 36 tests pass."
+    }
+  ]
+}

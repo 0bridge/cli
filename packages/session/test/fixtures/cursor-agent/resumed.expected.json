@@ -1,0 +1,32 @@
+{
+  "meta": {
+    "startedAt": 1790611200000
+  },
+  "conversation": [
+    {
+      "role": "user",
+      "at": 1790611200000,
+      "text": "Pick up the refactor"
+    },
+    {
+      "role": "assistant",
+      "at": 1790611200000,
+      "text": "Keep the old API?\n- Yes\n- No"
+    },
+    {
+      "role": "user",
+      "at": 1790611200000,
+      "text": "No"
+    },
+    {
+      "role": "user",
+      "at": 1790611800000,
+      "text": "Thanks"
+    },
+    {
+      "role": "assistant",
+      "at": 1790611800000,
+      "text": "Removed the old API."
+    }
+  ]
+}

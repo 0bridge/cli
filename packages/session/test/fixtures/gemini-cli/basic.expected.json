@@ -1,0 +1,28 @@
+{
+  "meta": {
+    "startedAt": 1790316000000,
+    "model": "gemini-3-pro"
+  },
+  "conversation": [
+    {
+      "role": "user",
+      "at": 1790316000000,
+      "text": "Explain the build script"
+    },
+    {
+      "role": "assistant",
+      "at": 1790316010000,
+      "text": "It bundles src with bun and writes dist/0b.js."
+    },
+    {
+      "role": "user",
+      "at": 1790316120000,
+      "text": "And the banner?"
+    },
+    {
+      "role": "assistant",
+      "at": 1790316125000,
+      "text": "It adds the node shebang."
+    }
+  ]
+}

@@ -35,7 +35,8 @@ export interface Manifest {
 
 /** What 0bridge has written into each tool, so it only ever removes things it owns. */
 export interface State {
-  managed: Partial<Record<ToolId, { mcp: string[]; skills: string[] }>>;
+  /** `hooks`: the hook entries (`0b hook …` commands) 0bridge added to the tool's settings. */
+  managed: Partial<Record<ToolId, { mcp: string[]; skills: string[]; hooks?: string[] }>>;
 }
 
 export interface Context {

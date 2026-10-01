@@ -1,0 +1,5 @@
+{"timestamp": "2026-09-21T09:00:00.000Z", "type": "session_meta", "payload": {"id": "33333333-4444-4555-8666-777777777777", "session_id": "33333333-4444-4555-8666-777777777777", "cwd": "/home/me/.openclaw/workspace", "timestamp": "2026-09-23T07:00:00Z", "originator": "openclaw", "source": "vscode", "git": {}}}
+{"timestamp": "2026-09-21T09:00:00.000Z", "type": "turn_context", "payload": {"cwd": "/home/me/.openclaw/workspace", "model": "gpt-6-sol"}}
+{"timestamp": "2026-09-21T09:00:00.000Z", "type": "response_item", "payload": {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "You are the coding agent."}]}}
+{"timestamp": "2026-09-21T09:00:00.000Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Summarise today's failing CI jobs"}]}}
+{"timestamp": "2026-09-21T09:00:00.000Z", "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Two jobs failed: lint and e2e."}]}}

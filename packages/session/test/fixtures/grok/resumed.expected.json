@@ -1,0 +1,27 @@
+{
+  "meta": {
+    "startedAt": 1790251200000
+  },
+  "conversation": [
+    {
+      "role": "user",
+      "at": 1790251200000,
+      "text": "Continue the docs update"
+    },
+    {
+      "role": "assistant",
+      "at": 1790251200000,
+      "text": "Which page first?\n- Install\n- API"
+    },
+    {
+      "role": "user",
+      "at": 1790251200000,
+      "text": "API"
+    },
+    {
+      "role": "assistant",
+      "at": 1790251200000,
+      "text": "Starting with the API page."
+    }
+  ]
+}

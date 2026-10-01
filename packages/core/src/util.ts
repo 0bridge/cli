@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { chmodSync, rmSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync, existsSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export function readText(path: string): string | null {
   try {
@@ -34,6 +34,16 @@ export function writeAtomic(path: string, content: string, opts: { mode?: number
   writeFileSync(tmp, content, { mode: mode ?? 0o666, flag: "wx" });
   if (mode != null) chmodSync(tmp, mode);
   renameSync(tmp, path);
+}
+
+/**
+ * Whether `p` is `root` or under it. By path.relative, not by string prefix: `/a/bc` isn't under
+ * `/a/b`, Windows compares without case, and a path on another drive (for which relative gives
+ * back an absolute path) is outside.
+ */
+export function isInside(root: string, p: string): boolean {
+  const r = relative(resolve(root), resolve(p));
+  return r === "" || (r !== ".." && !r.startsWith(`..${sep}`) && !isAbsolute(r));
 }
 
 /** Recursively list files under dir (relative paths, sorted), skipping OS junk. */

@@ -4,6 +4,7 @@ import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { accountName, CloudClient, deviceTokenKey, extraClaudeDirs, findAccount, loadAccounts, seenIn, editMcpTables, openSecretStore, parseToml, readJson, repoOf, writeAtomic, type CloudProjects, type Context } from "@0bridge/core";
 import { cloudClient, findConnection } from "./cloud.ts";
+import { CLOUD_HOOK_COMMAND, CLOUD_HOOK_PATH, cloudHookScript } from "./cloud-hook.ts";
 import { ignoreLocally } from "./files.ts";
 import { linkAccount, loadLinks, saveLinks } from "./links.ts";
 import { render, type Node } from "./tree.ts";
@@ -18,6 +19,11 @@ import { c } from "./ui.ts";
  *   Codex        .codex/config.toml in the checkout (read once the folder is trusted)
  *   Cursor       .cursor/mcp.json in the checkout
  * The files in the checkout hold the token, so they're kept out of git (.git/info/exclude).
+ *
+ * `0b project cloud` is for agents that run in the cloud on a clone (Claude Code on the web): files
+ * meant to be committed, which name the token's environment variable (ZEROB_TOKEN) instead of
+ * holding it, plus a hook that uploads each cloud session to the user's history and posts its
+ * state to their session board (cloud-hook.ts).
  */
 
 const SERVER_NAME = "0bridge";
@@ -181,9 +187,101 @@ function printTrees(agents: Node[], connections: Node[], strict: boolean) {
   for (const line of render(connections.length ? connections : [{ text: c.dim("none yet — 0b connect <service>") }])) console.log(line);
 }
 
+/** The token's place in committed files: each tool expands the variable when it starts. */
+const TOKEN_VAR = "ZEROB_TOKEN";
+/** A real token in a file means `0b project link` wrote it for this machine: never turn it into a committed one. */
+const holdsToken = (path: string) => existsSync(path) && /\b0b_[A-Za-z0-9_-]{20,}/.test(readFileSync(path, "utf8"));
+const ignored = (root: string, rel: string) => spawnSync("git", ["check-ignore", "-q", rel], { cwd: root }).status === 0;
+
+interface CloudFile {
+  file: string;
+  what: string;
+}
+
+/**
+ * `0b project cloud`'s files, for committing: the MCP server for the project's endpoint with the
+ * token from ZEROB_TOKEN, and (unless `hooks` is off) the hook that uploads each cloud session.
+ * Merged into what's there; running it again changes nothing. Returns what it wrote and what it left.
+ */
+export function writeCloudFiles(root: string, o: { server: string; url: string; hooks: boolean; codex?: boolean; cursor?: boolean }): { written: CloudFile[]; skipped: string[] } {
+  const written: CloudFile[] = [];
+  const skipped: string[] = [];
+
+  // Claude Code: the project scope (.mcp.json). A checkout linked with `0b project link` keeps its
+  // local-scope entry, which wins over this one on that machine.
+  const mcpJson = join(root, ".mcp.json");
+  const mcp = readJsonFile(mcpJson);
+  mcp.mcpServers = { ...(mcp.mcpServers ?? {}), [SERVER_NAME]: { type: "http", url: o.url, headers: { Authorization: `Bearer \${${TOKEN_VAR}}` } } };
+  writeAtomic(mcpJson, JSON.stringify(mcp, null, 2) + "\n");
+  written.push({ file: ".mcp.json", what: `Claude Code: 0bridge at this project's endpoint, with the token from ${TOKEN_VAR}` });
+
+  // The hook, run on Stop and SessionEnd (the upload; it waits for it) and, for the session board,
+  // on UserPromptSubmit and Notification in the background (a prompt never waits on the network).
+  // Our entries are replaced, anyone else's kept.
+  const settingsFile = join(root, ".claude", "settings.json");
+  const settings = readJsonFile(settingsFile);
+  const ours = (group: any) => Array.isArray(group?.hooks) && group.hooks.some((h: any) => typeof h?.command === "string" && h.command.includes(CLOUD_HOOK_PATH));
+  let changed = false;
+  for (const [event, entry] of [
+    ["Stop", { timeout: 30 }],
+    ["SessionEnd", { timeout: 30 }],
+    ["UserPromptSubmit", { timeout: 10, async: true }],
+    ["Notification", { timeout: 10, async: true }],
+  ] as const) {
+    const list: any[] = Array.isArray(settings.hooks?.[event]) ? settings.hooks[event] : [];
+    const kept = list.filter((g) => !ours(g));
+    if (kept.length !== list.length || o.hooks) changed = true;
+    const next = o.hooks ? [...kept, { hooks: [{ type: "command", command: CLOUD_HOOK_COMMAND, ...entry }] }] : kept;
+    if (next.length) (settings.hooks ??= {})[event] = next;
+    else if (settings.hooks) delete settings.hooks[event];
+  }
+  if (settings.hooks && !Object.keys(settings.hooks).length) delete settings.hooks;
+  const script = join(root, CLOUD_HOOK_PATH);
+  if (o.hooks) {
+    writeAtomic(script, cloudHookScript(o.server), { mode: 0o755 });
+    written.push({ file: CLOUD_HOOK_PATH, what: "shows each cloud session on your session board and uploads it to your history (only in the cloud, with the token set)" });
+  } else if (existsSync(script)) {
+    rmSync(script);
+    written.push({ file: CLOUD_HOOK_PATH, what: "removed" });
+  }
+  if (changed) {
+    if (Object.keys(settings).length || existsSync(settingsFile)) writeAtomic(settingsFile, JSON.stringify(settings, null, 2) + "\n");
+    written.push({ file: ".claude/settings.json", what: o.hooks ? "runs it as a prompt is sent, a session waits for you, and a turn or session ends" : "the upload hook removed" });
+  }
+
+  // Codex and Cursor read these from a clone too (field names to verify on each before relying on them).
+  if (o.codex) {
+    const rel = ".codex/config.toml";
+    const file = join(root, rel);
+    if (holdsToken(file)) skipped.push(`${rel} holds this machine's project token (0b project link), so it's left alone; 0b project unlink first to commit one for the cloud`);
+    else {
+      writeAtomic(file, editMcpTables(existsSync(file) ? readFileSync(file, "utf8") : "", { [SERVER_NAME]: { url: o.url, bearer_token_env_var: TOKEN_VAR } }, []));
+      written.push({ file: rel, what: `Codex: the same, with bearer_token_env_var = "${TOKEN_VAR}"` });
+    }
+  }
+  if (o.cursor) {
+    const rel = ".cursor/mcp.json";
+    const file = join(root, rel);
+    if (holdsToken(file)) skipped.push(`${rel} holds this machine's project token (0b project link), so it's left alone; 0b project unlink first to commit one for the cloud`);
+    else {
+      const obj = readJsonFile(file);
+      obj.mcpServers = { ...(obj.mcpServers ?? {}), [SERVER_NAME]: { url: o.url, headers: { Authorization: `Bearer \${env:${TOKEN_VAR}}` } } };
+      writeAtomic(file, JSON.stringify(obj, null, 2) + "\n");
+      written.push({ file: rel, what: `Cursor: the same, with the token from \${env:${TOKEN_VAR}}` });
+    }
+  }
+  for (const w of written) if (ignored(root, w.file)) skipped.push(`${w.file} is ignored by git here: add it with git add -f`);
+  return { written, skipped };
+}
+
 export interface ProjectOptions {
   strict?: boolean;
   label?: string;
+  /** `0b project cloud`: also write Codex's and Cursor's project config, skip the Claude hook, a read-only token. */
+  codex?: boolean;
+  cursor?: boolean;
+  noHooks?: boolean;
+  readOnly?: boolean;
 }
 
 export async function projectCommand(ctx: Context, args: string[], opts: ProjectOptions): Promise<void> {
@@ -266,6 +364,38 @@ export async function projectCommand(ctx: Context, args: string[], opts: Project
       console.log(c.dim("Start a new session in each tool (or reconnect MCP) to pick it up."));
       return;
     }
+    case "cloud": {
+      const h = here();
+      // The project the cloud agents' token opens: this repo's, made now if it isn't one yet.
+      const project = await client.createProject(h.repo);
+      const server = cfg.server.replace(/\/+$/, "");
+      const hooks = !opts.noHooks;
+      let files: ReturnType<typeof writeCloudFiles>;
+      try {
+        // The files first (they don't hold the token), so a broken one stops before a token is made.
+        files = writeCloudFiles(h.root, { server, url: `${server}/mcp/p/${project.id}`, hooks, codex: opts.codex, cursor: opts.cursor });
+      } catch (e) {
+        fail(`couldn't update this checkout's files: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      const scope = { tools: opts.readOnly ? "read" : "all", history: "read", agent: false, connections: null, api: hooks ? ["history:ingest"] : [] };
+      const t = await client.call<{ id: string; token: string; expiresAt: number | null }>("POST", `/projects/${encodeURIComponent(project.id)}/token`, { label: "cloud agents", scope, expiresInDays: 90 });
+      const host = new URL(server).host;
+      console.log(`${c.green("✓")} ${c.bold(project.repo)}: cloud agents working on a clone reach 0bridge at the project's endpoint.`);
+      const width = Math.max(...files.written.map((w) => w.file.length));
+      for (const w of files.written) console.log(`  ${w.file.padEnd(width)}  ${c.dim(w.what)}`);
+      for (const s of files.skipped) console.log(c.yellow(`  ${s}`));
+      const expires = t.expiresAt ? new Date(t.expiresAt).toISOString().slice(0, 10) : "never";
+      console.log(`\n${c.bold("Token for cloud agents")} ${c.dim(`(shown once; ${opts.readOnly ? "read-only tools" : "all tools"}, history: read${hooks ? " and upload of its own sessions" : ""}, no agent control; expires ${expires})`)}`);
+      console.log(`  ${t.token}`);
+      console.log(`\n${c.bold("Next")}`);
+      console.log(`  1. Add ${TOKEN_VAR}=<the token> to the cloud environment's variables (Claude Code on the web: the environment's settings; on Pro or Max you can add it as an API credential for ${host} instead).`);
+      console.log(`  2. Allow ${host} in the environment's network access (it isn't on the default trusted list).`);
+      console.log(`  3. Commit the files: git add -A ${files.written.map((w) => (w.file.startsWith(".0bridge/") ? ".0bridge" : w.file)).join(" ")} && git commit -m "0bridge for cloud agents"`);
+      console.log(c.dim(`\nAnyone who can see that environment can read the token. It opens this project's endpoint only, ends ${expires}, and you can revoke it on the dashboard (Devices).`));
+      if (loadLinks(ctx).links[h.root]?.projectId !== project.id)
+        console.log(c.dim(`Claude Code on this machine: the committed .mcp.json asks for ${TOKEN_VAR}. ${c.cyan("0b project link")} gives this checkout its own token, which takes precedence.`));
+      return;
+    }
     case "unlink": {
       const h = here();
       const links = loadLinks(ctx);
@@ -339,7 +469,7 @@ export async function projectCommand(ctx: Context, args: string[], opts: Project
       return;
     }
     default:
-      fail(`unknown subcommand "project ${sub}". Try: link, status, list, use, unuse, hide, show, strict, unlink, rm`);
+      fail(`unknown subcommand "project ${sub}". Try: link, status, list, use, unuse, hide, show, strict, cloud, unlink, rm`);
   }
 }
 

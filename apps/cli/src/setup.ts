@@ -38,8 +38,8 @@ const hostOf = (u?: string) => {
   }
 };
 
-/** Signed in with a device token the server still accepts. */
-async function signedIn(ctx: Context): Promise<string | null> {
+/** Signed in with a device token the server still accepts (an expired agent-VM token isn't). */
+export async function signedIn(ctx: Context): Promise<string | null> {
   const cfg = loadCloud(ctx);
   if (!cfg || !openSecretStore(ctx.storeDir).get(deviceTokenKey(cfg))) return null;
   try {

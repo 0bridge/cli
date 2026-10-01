@@ -1,5 +1,5 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, posix, relative, win32 } from "node:path";
 import type { Context, Manifest, McpServer, State, ToolId } from "./types.ts";
 import { TOOL_IDS } from "./types.ts";
 import { claudeMirrors, getAdapters, isInstalled, portableKey, type Adapter } from "./adapters.ts";
@@ -12,7 +12,8 @@ import { readJson, readText, stableStringify, writeAtomic } from "./util.ts";
 export interface FileChange {
   kind: "file";
   tool: ToolId;
-  what: "mcp" | "instructions";
+  /** `hooks`: the turn-end hook entries of `0b history hooks` (hooks.ts). */
+  what: "mcp" | "instructions" | "hooks";
   path: string;
   before: string | null;
   after: string;
@@ -186,6 +187,22 @@ export function planApply(ctx: Context, m: Manifest, prev: State, store: SecretS
   return { changes, warnings, missing: [...missing], state };
 }
 
+/**
+ * Where a backed-up path goes inside a backup's `files` folder: the absolute path made relative,
+ * keeping the drive on Windows so C:\x and D:\x never share a copy. `/home/me/.claude.json` →
+ * `home/me/.claude.json`, `C:\Users\me\.claude.json` → `C/Users/me/.claude.json`,
+ * `\\server\share\x` → `UNC/server/share/x`.
+ */
+export function backupRel(p: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform !== "win32") return posix.relative("/", posix.resolve("/", p));
+  const abs = win32.resolve(p);
+  const { root } = win32.parse(abs);
+  const rest = abs.slice(root.length).split(/[\\/]+/).filter(Boolean);
+  const drive = /^([A-Za-z]):/.exec(root)?.[1]?.toUpperCase();
+  const head = drive ? [drive] : ["UNC", ...root.split(/[\\/]+/).filter(Boolean)];
+  return [...head, ...rest].join("/");
+}
+
 interface BackupIndex {
   createdAt: string;
   entries: { path: string; existed: boolean }[];
@@ -201,7 +218,7 @@ export function executePlan(ctx: Context, plan: Plan): string {
     if (index.entries.some((e) => e.path === p)) return;
     const existed = existsSync(p);
     if (existed) {
-      const dst = join(root, "files", relative("/", p));
+      const dst = join(root, "files", backupRel(p));
       mkdirSync(dirname(dst), { recursive: true });
       cpSync(p, dst, { recursive: true });
     }
@@ -232,15 +249,25 @@ export function listBackups(ctx: Context): string[] {
   return existsSync(dir) ? readdirSync(dir).filter((d) => existsSync(join(dir, d, "index.json"))).sort() : [];
 }
 
-/** Put every path touched by an apply back the way it was (paths it created are deleted). */
+/**
+ * Put every path touched by an apply back the way it was (paths it created are deleted). Every
+ * copy is found before anything is touched; a backup from before backupRel kept the drive (Windows)
+ * is read where it was written then.
+ */
 export function restoreBackup(ctx: Context, id: string): string[] {
   const root = join(paths(ctx).backups, id);
   const index = readJson<BackupIndex>(join(root, "index.json"));
   if (!index) throw new Error(`no backup ${id}`);
-  for (const e of index.entries) {
+  const copies = index.entries.map((e) => {
+    if (!e.existed) return null;
+    const copy = [backupRel(e.path), relative("/", e.path)].map((r) => join(root, "files", r)).find((f) => existsSync(f));
+    if (!copy) throw new Error(`backup ${id} has no copy of ${e.path}; nothing was restored`);
+    return copy;
+  });
+  index.entries.forEach((e, i) => {
     rmSync(e.path, { recursive: true, force: true });
-    if (e.existed) cpSync(join(root, "files", relative("/", e.path)), e.path, { recursive: true });
-  }
+    if (copies[i]) cpSync(copies[i]!, e.path, { recursive: true });
+  });
   return index.entries.map((e) => e.path);
 }
 

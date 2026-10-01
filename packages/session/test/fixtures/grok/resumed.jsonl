@@ -1,0 +1,4 @@
+{"timestamp": "2026-09-24T12:00:00Z", "type": "user", "content": [{"type": "text", "text": "<user_query>Continue the docs update</user_query>"}]}
+{"timestamp": "2026-09-24T12:00:00Z", "type": "assistant", "content": "", "tool_calls": [{"id": "q1", "name": "ask_user_question", "arguments": "{\"question\":\"Which page first?\",\"options\":[\"Install\",\"API\"]}"}]}
+{"timestamp": "2026-09-24T12:00:00Z", "type": "tool_result", "tool_call_id": "q1", "content": "API"}
+{"timestamp": "2026-09-24T12:00:00Z", "type": "assistant", "content": "Starting with the API page."}

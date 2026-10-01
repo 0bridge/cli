@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://0bridge.dev/schemas/session-1.json",
+  "title": "0b.session/1",
+  "description": "One AI session (a coding agent's transcript or a chat app's conversation) from any tool, optionally with its events. Additive changes keep the version; a breaking change is 0b.session/2.",
+  "type": "object",
+  "required": ["schema", "id", "source", "createdAt", "updatedAt"],
+  "properties": {
+    "schema": { "const": "0b.session/1" },
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*:.+", "description": "Canonical \"<tool>:<native id>\"; starts with source.tool." },
+    "source": {
+      "type": "object",
+      "required": ["vendor", "product", "tool", "nativeId"],
+      "properties": {
+        "vendor": { "enum": ["anthropic", "openai", "google", "xai", "cursor", "meta", "nous", "openclaw", "other"] },
+        "product": { "type": "string", "description": "Human name: Claude Code, Codex, Gemini CLI." },
+        "tool": { "type": "string", "description": "Machine label: claude-code, claude-app, codex, codex-app, grok, cursor, cursor-agent, gemini, openclaw, hermes." },
+        "nativeId": { "type": "string", "description": "The tool's own session id." },
+        "host": { "type": "string", "description": "The machine it ran on." },
+        "account": { "type": "string", "description": "Which of the person's accounts of that tool, when not the default one." }
+      }
+    },
+    "title": { "type": "string" },
+    "cwd": { "type": "string" },
+    "repo": {
+      "type": "object",
+      "properties": { "remote": { "type": "string" }, "branch": { "type": "string" }, "commit": { "type": "string" } }
+    },
+    "createdAt": { "type": "number", "description": "Epoch milliseconds." },
+    "updatedAt": { "type": "number", "description": "Epoch milliseconds." },
+    "model": { "type": "string" },
+    "resume": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["native-cli", "acp", "none"] },
+        "command": { "type": "string", "description": "e.g. claude --resume <uuid>" },
+        "nativeId": { "type": "string" }
+      }
+    },
+    "parentId": { "type": "string", "description": "The session this one was forked or continued from (canonical id)." },
+    "usage": {
+      "type": "object",
+      "properties": { "inputTokens": { "type": "number" }, "outputTokens": { "type": "number" } }
+    },
+    "x": { "type": "object", "description": "Vendor passthrough." },
+    "events": { "type": "array", "items": { "$ref": "#/$defs/event" } }
+  },
+  "$defs": {
+    "event": {
+      "type": "object",
+      "required": ["id", "seq", "ts", "role", "parts"],
+      "properties": {
+        "id": { "type": "string", "description": "The tool's id for it when it has one, else \"#<seq>\"." },
+        "seq": { "type": "integer", "minimum": 0, "description": "Position in the session, from 0, without gaps." },
+        "ts": { "type": "number", "description": "Epoch milliseconds; 0 when the log has no time." },
+        "role": { "enum": ["user", "assistant", "system", "tool"] },
+        "parts": { "type": "array", "items": { "$ref": "#/$defs/part" } },
+        "model": { "type": "string" },
+        "injected": { "type": "boolean", "description": "Context the tool added on its own, not something the person typed." },
+        "ask": { "enum": ["question", "answer"], "description": "The agent asking the person something, and the answer." },
+        "raw": {
+          "type": "object",
+          "required": ["line"],
+          "properties": { "line": { "type": "integer", "minimum": 0, "description": "Line (or record) in the source log, from 0." } }
+        }
+      }
+    },
+    "part": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type", "text"],
+          "properties": { "type": { "enum": ["text", "thinking"] }, "text": { "type": "string" }, "redacted": { "type": "boolean" } }
+        },
+        {
+          "type": "object",
+          "required": ["type", "callId", "name"],
+          "properties": { "type": { "const": "tool_call" }, "callId": { "type": "string" }, "name": { "type": "string" }, "input": {} }
+        },
+        {
+          "type": "object",
+          "required": ["type", "callId", "output"],
+          "properties": { "type": { "const": "tool_result" }, "callId": { "type": "string" }, "output": { "type": "string" }, "isError": { "type": "boolean" } }
+        },
+        {
+          "type": "object",
+          "required": ["type", "mime"],
+          "properties": { "type": { "const": "file" }, "mime": { "type": "string" }, "uri": { "type": "string" }, "sha256": { "type": "string" } }
+        }
+      ]
+    }
+  }
+}

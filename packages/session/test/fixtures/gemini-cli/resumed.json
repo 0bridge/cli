@@ -1,0 +1,61 @@
+{
+  "sessionId": "88888888-9999-4aaa-8bbb-cccccccccccc",
+  "projectHash": "cafe",
+  "startTime": "2026-09-26T05:00:00.000Z",
+  "lastUpdated": "2026-09-26T09:00:00.000Z",
+  "summary": "Docs site navigation",
+  "messages": [
+    {
+      "id": "r1",
+      "timestamp": "2026-09-26T05:00:00.000Z",
+      "type": "user",
+      "content": "Add a sidebar to the docs"
+    },
+    {
+      "id": "r2",
+      "timestamp": "2026-09-26T05:00:30.000Z",
+      "type": "gemini",
+      "content": "Added a sidebar component.",
+      "model": "gemini-3-pro"
+    },
+    {
+      "id": "r3",
+      "timestamp": "2026-09-26T09:00:00.000Z",
+      "type": "user",
+      "content": "Resuming: now make it collapsible"
+    },
+    {
+      "id": "r4",
+      "timestamp": "2026-09-26T09:00:20.000Z",
+      "type": "gemini",
+      "content": "",
+      "toolCalls": [
+        {
+          "id": "ask-1",
+          "name": "ask_user",
+          "args": {
+            "question": "Collapsed by default?"
+          },
+          "status": "success",
+          "result": [
+            {
+              "functionResponse": {
+                "id": "ask-1",
+                "name": "ask_user",
+                "response": {
+                  "output": "Expanded by default"
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "r5",
+      "timestamp": "2026-09-26T09:00:40.000Z",
+      "type": "gemini",
+      "content": "It starts expanded and remembers the choice."
+    }
+  ]
+}

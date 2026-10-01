@@ -1,0 +1,6 @@
+{"timestamp": "2026-09-21T09:00:00.000Z", "type": "session_meta", "payload": {"id": "55555555-6666-4777-8888-999999999999", "session_id": "55555555-6666-4777-8888-999999999999", "cwd": "/home/me/.openclaw/workspace", "timestamp": "2026-09-23T07:00:00Z", "originator": "openclaw", "source": "vscode", "git": {}}}
+{"timestamp": "2026-09-21T09:00:00.000Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "<turn_aborted>interrupted</turn_aborted>"}]}}
+{"timestamp": "2026-09-21T09:00:00.000Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Try the release notes again."}]}}
+{"timestamp": "2026-09-21T09:00:00.000Z", "type": "response_item", "payload": {"type": "function_call", "name": "ask_user", "call_id": "q9", "arguments": "{\"question\":\"Include internal changes?\"}"}}
+{"timestamp": "2026-09-21T09:00:00.000Z", "type": "response_item", "payload": {"type": "function_call_output", "call_id": "q9", "output": "No, public only"}}
+{"timestamp": "2026-09-21T09:00:00.000Z", "type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Release notes drafted (public changes only)."}]}}

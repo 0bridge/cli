@@ -1,0 +1,5 @@
+{"role": "user", "content": "<agent_skills>\n<available_skills>...</available_skills>\n</agent_skills>"}
+{"role": "user", "content": [{"type": "text", "text": "<timestamp>Sunday, Sep 27, 2026, 9:05 AM (UTC)</timestamp>\n<user_query>\nList the TODOs in src\n</user_query>"}]}
+{"role": "assistant", "content": [{"type": "tool-call", "toolCallId": "c1", "toolName": "grep", "input": {"pattern": "TODO"}}], "id": "msg_2"}
+{"role": "tool", "content": [{"type": "tool-result", "toolCallId": "c1", "toolName": "grep", "output": {"type": "text", "value": "src/a.ts:1 TODO"}}]}
+{"role": "assistant", "content": [{"type": "text", "text": "One TODO, in src/a.ts."}], "id": "msg_3"}

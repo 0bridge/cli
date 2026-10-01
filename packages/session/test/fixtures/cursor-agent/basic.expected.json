@@ -1,0 +1,17 @@
+{
+  "meta": {
+    "startedAt": 1790422980000
+  },
+  "conversation": [
+    {
+      "role": "user",
+      "at": 1790422980000,
+      "text": "Reply with exactly LIVE-CURSOR-OK"
+    },
+    {
+      "role": "assistant",
+      "at": 1790422980000,
+      "text": "LIVE-CURSOR-OK"
+    }
+  ]
+}

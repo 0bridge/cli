@@ -11,7 +11,7 @@
     },
     "apps/cli": {
       "name": "0bridge",
-      "version": "0.2.18",
+      "version": "0.2.19",
       "bin": {
         "0b": "dist/0b.js",
         "0bridge": "dist/0b.js",
@@ -26,15 +26,22 @@
       "name": "@0bridge/core",
       "version": "0.0.0",
       "dependencies": {
+        "@0bridge/session": "workspace:*",
         "diff": "^8.0.0",
         "smol-toml": "^1.3.0",
       },
+    },
+    "packages/session": {
+      "name": "@0bridge/session",
+      "version": "0.1.0",
     },
   },
   "packages": {
     "0bridge": ["0bridge@workspace:apps/cli"],
 
     "@0bridge/core": ["@0bridge/core@workspace:packages/core"],
+
+    "@0bridge/session": ["@0bridge/session@workspace:packages/session"],
 
     "@clack/core": ["@clack/core@1.5.1", "", { "dependencies": { "fast-wrap-ansi": "^0.2.0", "sisteransi": "^1.0.5" } }, "sha512-iHTrHA8MtVuLl2TfZySmcKv1qO2PoyC9Z7pfSDozEuV5vtY3/wcOPKJXlqJ5Oq2Cx5DDGQGAMVx6HZfRRoVEbQ=="],
 

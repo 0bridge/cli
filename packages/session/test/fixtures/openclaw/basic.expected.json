@@ -1,0 +1,20 @@
+{
+  "meta": {
+    "tool": "openclaw",
+    "cwd": "/home/me/.openclaw/workspace",
+    "startedAt": 1790146800000,
+    "model": "gpt-6-sol"
+  },
+  "conversation": [
+    {
+      "role": "user",
+      "at": 1789981200000,
+      "text": "Summarise today's failing CI jobs"
+    },
+    {
+      "role": "assistant",
+      "at": 1789981200000,
+      "text": "Two jobs failed: lint and e2e."
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 import * as p from "@clack/prompts";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve, win32 } from "node:path";
 import { createInterface } from "node:readline";
 import {
   CLIS,
@@ -91,7 +91,8 @@ export async function loginInto(ctx: Context, name: string, cli: string): Promis
   saveProfiles(ctx, cfg);
   const dir = refreshOverlay(ctx, name, clis);
   console.log(`${c.bold(a.label)} → sign in for profile ${c.bold(name)} ${c.dim(`(${a.login.join(" ")})`)}`);
-  const child = spawn(bin, a.login.slice(1), { stdio: "inherit", env: { ...process.env, XDG_CONFIG_HOME: dir, GH_CONFIG_DIR: join(dir, "gh") } });
+  const run = spawnTarget(bin, a.login.slice(1), process.env.PATH ?? "");
+  const child = spawn(run.cmd, run.args, { stdio: "inherit", shell: run.shell, env: { ...process.env, XDG_CONFIG_HOME: dir, GH_CONFIG_DIR: join(dir, "gh") } });
   if (a.localhostCallback && !canOpenBrowser() && process.stdin.isTTY) relayCallback(child);
   const status = await new Promise<number | null>((ok) => {
     child.once("error", (e) => fail(`${a.login[0]}: ${e.message}`));
@@ -106,7 +107,8 @@ function whoami(ctx: Context, name: string, cli: string): string {
   const a = CLIS[cli]!;
   const bin = findBin(a.whoami[0]!);
   if (!bin) return c.yellow(`${a.whoami[0]} not installed`);
-  const r = spawnSync(bin, a.whoami.slice(1), { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: dir, GH_CONFIG_DIR: join(dir, "gh") } });
+  const run = spawnTarget(bin, a.whoami.slice(1), process.env.PATH ?? "");
+  const r = spawnSync(run.cmd, run.args, { encoding: "utf8", shell: run.shell, env:{ ...process.env, XDG_CONFIG_HOME: dir, GH_CONFIG_DIR: join(dir, "gh") } });
   const out = `${r.stdout ?? ""}\n${r.stderr ?? ""}`;
   const email = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/.exec(out)?.[0];
   const gh = /account (\S+)/.exec(out)?.[1];
@@ -166,17 +168,26 @@ function list(ctx: Context) {
   }
 }
 
+/** A shim that runs the real `cli` with this repo's profile: a shell script, or a .cmd on Windows (what cmd and PowerShell run). */
+export function renderShim(cli: string, platform: NodeJS.Platform = process.platform): { file: string; body: string } {
+  if (platform === "win32") return { file: `${cli}.cmd`, body: `@echo off\r\nrem 0bridge: run the real ${cli} with this repo's profile (0b profile).\r\n0b exec --shim ${cli} -- %*\r\n` };
+  return { file: cli, body: `#!/bin/sh\n# 0bridge: run the real ${cli} with this repo's profile (0b profile).\nexec 0b exec --shim ${cli} -- "$@"\n` };
+}
+
 function shims(ctx: Context) {
   const dir = binDir(ctx);
   mkdirSync(dir, { recursive: true });
   for (const cli of Object.keys(CLIS)) {
-    const f = join(dir, cli);
-    writeFileSync(f, `#!/bin/sh\n# 0bridge: run the real ${cli} with this repo's profile (0b profile).\nexec 0b exec --shim ${cli} -- "$@"\n`);
-    chmodSync(f, 0o755);
+    const s = renderShim(cli);
+    const f = join(dir, s.file);
+    writeFileSync(f, s.body);
+    if (process.platform !== "win32") chmodSync(f, 0o755);
   }
-  const onPath = (process.env.PATH ?? "").split(delimiter).includes(dir);
+  const onPath = (process.env.PATH ?? "").split(delimiter).some((d) => resolve(d) === resolve(dir));
   console.log(`${c.green("✓")} shims for ${Object.keys(CLIS).join(", ")} in ${dir}`);
-  if (!onPath) console.log(`Add this to ~/.zshrc (or your shell's rc), before other PATH changes take effect:\n  ${c.cyan(`export PATH="${dir}:$PATH"`)}`);
+  if (onPath) return;
+  if (process.platform === "win32") console.log(`Put ${dir} first on your PATH (Settings → System → About → Advanced system settings → Environment Variables), then open a new terminal.`);
+  else console.log(`Add this to ~/.zshrc (or your shell's rc), before other PATH changes take effect:\n  ${c.cyan(`export PATH="${dir}:$PATH"`)}`);
 }
 
 export async function profileCommand(ctx: Context, args: string[]) {
@@ -237,6 +248,25 @@ export async function profileCommand(ctx: Context, args: string[]) {
 export const execMarker = (shim: string | undefined, envName: string): Record<string, string> =>
   shim ? {} : { ZEROBRIDGE_ENV: envName };
 
+/**
+ * How to start `cmd` here. Windows CLIs installed by npm are .cmd scripts, which only cmd.exe runs
+ * (Node refuses to spawn them without a shell), so those go through it with each argument quoted.
+ */
+export function spawnTarget(cmd: string, args: string[], PATH: string, platform: NodeJS.Platform = process.platform, exists: (p: string) => boolean = existsSync): { cmd: string; args: string[]; shell: boolean } {
+  if (platform !== "win32") return { cmd, args, shell: false };
+  let found = cmd;
+  if (!/[\\/]/.test(cmd) && !/\.\w+$/.test(cmd))
+    search: for (const d of PATH.split(";").filter(Boolean))
+      for (const ext of [".exe", ".cmd", ".bat"])
+        if (exists(win32.join(d, cmd + ext))) {
+          found = win32.join(d, cmd + ext);
+          break search;
+        }
+  if (!/\.(cmd|bat)$/i.test(found)) return { cmd: found, args, shell: false };
+  const q = (a: string) => (/^[\w@%+=:,./\\-]+$/.test(a) ? a : `"${a.replace(/"/g, '""')}"`);
+  return { cmd: q(found), args: args.map(q), shell: true };
+}
+
 export async function execCommand(ctx: Context, argv: string[]): Promise<never> {
   let shim: string | undefined;
   let envName = DEFAULT_ENV;
@@ -255,12 +285,15 @@ export async function execCommand(ctx: Context, argv: string[]): Promise<never> 
   // The approval page shows what's asking: the command and its first argument, never more (it could hold a secret).
   const vault = shim ? { env: {}, hidden: [] } : await vaultEnv(ctx, process.cwd(), envName, [cmd, ...args.slice(0, 1)].join(" ").slice(0, 80));
   // A shim must find the real binary, not itself.
-  const PATH = (process.env.PATH ?? "").split(delimiter).filter((d) => d !== binDir(ctx)).join(delimiter);
-  const childEnv = { ...process.env, PATH, ...vault.env, ...env, ...execMarker(shim, envName) };
+  const PATH = (process.env.PATH ?? "").split(delimiter).filter((d) => resolve(d) !== resolve(binDir(ctx))).join(delimiter);
+  // Windows spells it Path; a second PATH key next to it would leave the child with either one.
+  const base = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.toUpperCase() !== "PATH"));
+  const childEnv = { ...base, PATH, ...vault.env, ...env, ...execMarker(shim, envName) };
   // Only secrets are masked; variables (PORT, NODE_ENV) show as they are.
   const values = vault.hidden;
   const mask = values.length > 0 && !process.stdout.isTTY;
-  const child = spawn(cmd, args, { stdio: ["inherit", mask ? "pipe" : "inherit", mask ? "pipe" : "inherit"], env: childEnv });
+  const run = spawnTarget(cmd, args, PATH);
+  const child = spawn(run.cmd, run.args, { stdio: ["inherit", mask ? "pipe" : "inherit", mask ? "pipe" : "inherit"], env: childEnv, shell: run.shell });
   if (mask) {
     for (const [from, to] of [
       [child.stdout!, process.stdout],

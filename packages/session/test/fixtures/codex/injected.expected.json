@@ -1,0 +1,29 @@
+{
+  "meta": {
+    "cwd": "/work/acme/api",
+    "startedAt": 1789984800000,
+    "tool": "codex"
+  },
+  "conversation": [
+    {
+      "role": "user",
+      "at": 1789981200000,
+      "text": "Which tests are flaky?"
+    },
+    {
+      "role": "assistant",
+      "at": 1789981200000,
+      "text": "Only unit tests?\n- Unit\n- All"
+    },
+    {
+      "role": "user",
+      "at": 1789981200000,
+      "text": "All of them"
+    },
+    {
+      "role": "assistant",
+      "at": 1789981200000,
+      "text": "Three tests are flaky: \nauth, cart and search."
+    }
+  ]
+}

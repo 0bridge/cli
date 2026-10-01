@@ -1,0 +1,29 @@
+{
+  "meta": {
+    "tool": "openclaw",
+    "cwd": "/home/me/.openclaw/workspace",
+    "startedAt": 1790146800000
+  },
+  "conversation": [
+    {
+      "role": "user",
+      "at": 1789981200000,
+      "text": "Try the release notes again."
+    },
+    {
+      "role": "assistant",
+      "at": 1789981200000,
+      "text": "Include internal changes?"
+    },
+    {
+      "role": "user",
+      "at": 1789981200000,
+      "text": "No, public only"
+    },
+    {
+      "role": "assistant",
+      "at": 1789981200000,
+      "text": "Release notes drafted (public changes only)."
+    }
+  ]
+}

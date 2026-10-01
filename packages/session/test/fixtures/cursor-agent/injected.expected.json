@@ -1,0 +1,17 @@
+{
+  "meta": {
+    "startedAt": 1790499900000
+  },
+  "conversation": [
+    {
+      "role": "user",
+      "at": 1790499900000,
+      "text": "List the TODOs in src"
+    },
+    {
+      "role": "assistant",
+      "at": 1790499900000,
+      "text": "One TODO, in src/a.ts."
+    }
+  ]
+}

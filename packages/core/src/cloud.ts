@@ -50,6 +50,11 @@ export interface HistorySessionMeta {
   updatedAt: number;
   messages: number;
   enc: boolean;
+  /** The display ref "0b:xxxxxx"; missing from servers older than the handoff round. */
+  short?: string;
+  branch?: string | null;
+  summary?: string | null;
+  open?: string | null;
 }
 export interface HistoryHit {
   session: HistorySessionMeta;
@@ -295,6 +300,14 @@ export class CloudClient {
     const body = (await res.json().catch(() => ({}))) as any;
     if (!res.ok && !allow.includes(res.status)) throw new CloudError(body.error ?? `${res.status} ${res.statusText}`, res.status, body.code);
     return body as T;
+  }
+
+  /**
+   * Any /api route (`path` without the /api prefix), for commands whose calls don't have a method
+   * here yet. `allow` lists statuses returned as a body instead of thrown.
+   */
+  call<T>(method: string, path: string, body?: unknown, allow: number[] = []): Promise<T> {
+    return this.req<T>(path, { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }, allow);
   }
 
   me() {

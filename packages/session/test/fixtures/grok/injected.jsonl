@@ -1,0 +1,5 @@
+{"timestamp": "2026-09-24T12:00:00Z", "type": "user", "content": "<environment>linux</environment>"}
+{"timestamp": "2026-09-24T12:00:00Z", "type": "user", "content": [{"type": "text", "text": "<user_query>   </user_query>"}, {"type": "text", "text": "<user_query>Rename the cache flag</user_query>"}]}
+{"timestamp": "2026-09-24T12:00:00Z", "type": "assistant", "content": "", "tool_calls": [{"id": "t1", "name": "edit_file", "arguments": "{\"path\":\"cache.ts\"}"}]}
+{"timestamp": "2026-09-24T12:00:00Z", "type": "tool_result", "tool_call_id": "t1", "content": "edited"}
+{"timestamp": "2026-09-24T12:00:00Z", "type": "assistant", "content": "Renamed to CACHE_TTL."}

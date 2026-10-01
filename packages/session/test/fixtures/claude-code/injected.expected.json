@@ -1,0 +1,20 @@
+{
+  "meta": {
+    "title": "Earlier work on the importer",
+    "branch": "fix/webhook",
+    "cwd": "/work/acme/web",
+    "startedAt": 1789898400000
+  },
+  "conversation": [
+    {
+      "role": "user",
+      "at": 1789898400000,
+      "text": "Why does the importer skip empty rows?"
+    },
+    {
+      "role": "assistant",
+      "at": 1789898460000,
+      "text": "Because the CSV reader drops them before validation."
+    }
+  ]
+}

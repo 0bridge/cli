@@ -1,0 +1,17 @@
+{
+  "meta": {
+    "startedAt": 1790251200000
+  },
+  "conversation": [
+    {
+      "role": "user",
+      "at": 1790251200000,
+      "text": "Rename the cache flag"
+    },
+    {
+      "role": "assistant",
+      "at": 1790251200000,
+      "text": "Renamed to CACHE_TTL."
+    }
+  ]
+}

@@ -4,7 +4,7 @@ import { hostname, tmpdir } from "node:os";
 import { basename, delimiter, extname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { deviceTokenKey, openSecretStore, type CloudClient, type Context } from "@0bridge/core";
-import { installAgent } from "./background.ts";
+import { installService } from "./service.ts";
 import { cloudClient } from "./cloud.ts";
 import { c } from "./ui.ts";
 
@@ -147,6 +147,39 @@ function readLinuxClipboard(dir: string): { files: string[] } | { text: string }
   return null;
 }
 
+/**
+ * Windows: copied files (Explorer), else an image (a screenshot, Win+Shift+S), else text, through
+ * Windows PowerShell's Get-Clipboard (-Format Image and FileDropList are Windows PowerShell 5.1's).
+ */
+export const WINDOWS_CLIPBOARD_SCRIPT = (dir: string) => `
+$ErrorActionPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Drawing
+$out = @{ files = @(); image = $null; text = $null }
+$files = Get-Clipboard -Format FileDropList
+if ($files) { $out.files = @($files | ForEach-Object { $_.FullName }) }
+else {
+  $img = Get-Clipboard -Format Image
+  if ($img) { $p = Join-Path '${dir.replace(/'/g, "''")}' 'clipboard.png'; $img.Save($p, [System.Drawing.Imaging.ImageFormat]::Png); $out.image = $p }
+  else { $out.text = Get-Clipboard -Format Text -Raw }
+}
+$out | ConvertTo-Json -Compress`;
+
+function readWindowsClipboard(dir: string): { files: string[] } | { text: string } | null {
+  const r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-STA", "-Command", WINDOWS_CLIPBOARD_SCRIPT(dir)], { encoding: "utf8", windowsHide: true });
+  if (r.status !== 0 || !r.stdout?.trim()) return null;
+  let got: { files?: string[] | string; image?: string | null; text?: string | null };
+  try {
+    got = JSON.parse(r.stdout.trim());
+  } catch {
+    return null;
+  }
+  const files = typeof got.files === "string" ? [got.files] : (got.files ?? []);
+  if (files.length) return { files };
+  if (got.image) return { files: [got.image] };
+  return got.text ? { text: got.text } : null;
+}
+
 const kb = (n: number) => (n > 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 
 export async function clipCommand(ctx: Context, args: string[]): Promise<void> {
@@ -187,7 +220,7 @@ async function sendClipboard(client: CloudClient, files: string[]): Promise<stri
     let text: string | null = null;
     if (files.length) files = files.map((f) => (existsSync(f) ? f : fail(`${f} not found`)));
     else {
-      const got = process.platform === "darwin" ? readMacClipboard(dir) : readLinuxClipboard(dir);
+      const got = process.platform === "darwin" ? readMacClipboard(dir) : process.platform === "win32" ? readWindowsClipboard(dir) : readLinuxClipboard(dir);
       if (!got) return [];
       if ("text" in got) text = got.text;
       else files = got.files;
@@ -279,10 +312,14 @@ async function sync(ctx: Context): Promise<void> {
   }
 }
 
-/** Keep `0b clip sync` running at login (macOS LaunchAgent); elsewhere it's the receiving end, which ⌃V starts. */
+/** Keep `0b clip sync` running at login (on a Mac: it watches the clipboard); on Linux it's the receiving end, which ⌃V starts. */
 function installSync(ctx: Context, on: boolean): void {
-  if (process.platform !== "darwin") return installPasteShims(ctx, on);
-  installAgent(ctx, "dev.0bridge.clipsync", on ? ["clip", "sync"] : null, { keepAlive: true });
+  if (process.platform === "linux") return installPasteShims(ctx, on);
+  if (process.platform !== "darwin") {
+    console.log("Clipboard sync belongs on the computer you copy on (your Mac): run `0b clip sync on` there. Agents here read what it sends; `0b clip paste` saves it here.");
+    return;
+  }
+  installService(ctx, "clipsync", on ? ["clip", "sync"] : null, { keepAlive: true });
   console.log(
     on
       ? `${c.green("✓")} Images you copy on this Mac (screenshots, copied images, image files) go to your agents as you copy them. Text never does on its own; send it with ${c.cyan("0b clip")}. Each waits 10 minutes, and a new copy replaces the last.`
@@ -553,10 +590,50 @@ async function receive(ctx: Context): Promise<void> {
 const TRUST_MS = 60 * 60 * 1000;
 type Answer = "once" | "hour" | false;
 
-/** Ask the person at this Mac. Tests answer with ZEROBRIDGE_CLIP_ANSWER=allow|hour|deny instead. */
+const onPath = (cmd: string) => (process.env.PATH ?? "").split(delimiter).some((d) => d && existsSync(join(d, cmd)));
+
+/** The dialog program of this Linux desktop: zenity (GNOME and most others) or kdialog (KDE); none without a display. */
+export function linuxDialog(env: NodeJS.ProcessEnv = process.env, has: (cmd: string) => boolean = onPath): "zenity" | "kdialog" | null {
+  if (!env.DISPLAY && !env.WAYLAND_DISPLAY) return null;
+  return has("zenity") ? "zenity" : has("kdialog") ? "kdialog" : null;
+}
+
+/** The dialog's arguments: Allow, Allow for 1 Hour, Don't Allow (also what closing it or waiting 60 s means). */
+export function dialogArgs(kind: "zenity" | "kdialog", text: string): string[] {
+  if (kind === "zenity") return ["--question", "--title=0bridge", "--no-markup", `--text=${text}`, "--ok-label=Allow", "--cancel-label=Don't Allow", "--extra-button=Allow for 1 Hour", "--timeout=60"];
+  return ["--title", "0bridge", "--yesnocancel", text, "--yes-label", "Allow", "--no-label", "Allow for 1 Hour", "--cancel-label", "Don't Allow"];
+}
+
+/** What the person chose. zenity: 0 OK, 1 cancel or the extra button (it prints its label), 5 timed out. kdialog: 0 yes, 1 no, 2 cancel. */
+export function dialogAnswer(kind: "zenity" | "kdialog", code: number | null, out: string): Answer {
+  if (kind === "zenity") return code === 0 ? "once" : code === 1 && out.includes("Allow for 1 Hour") ? "hour" : false;
+  return code === 0 ? "once" : code === 1 ? "hour" : false;
+}
+
+/** Ask with a Linux desktop dialog; nobody to ask (no display, no dialog program) is a no. */
+function askLinux(who: string): { answer: Promise<Answer>; cancel: () => void } {
+  const kind = linuxDialog();
+  if (!kind) return { answer: Promise.resolve(false), cancel: () => {} };
+  const child: ChildProcess = spawn(kind, dialogArgs(kind, `${who} wants to see what's on your clipboard (a screenshot, copied files or text).`), { stdio: ["ignore", "pipe", "ignore"] });
+  let out = "";
+  child.stdout!.on("data", (d) => (out += d));
+  // kdialog has no timeout of its own.
+  const timer = setTimeout(() => child.kill(), 60_000);
+  const answer = new Promise<Answer>((res) => {
+    child.on("error", () => res(false));
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      res(dialogAnswer(kind, code, out));
+    });
+  });
+  return { answer, cancel: () => child.kill() };
+}
+
+/** Ask the person at this computer. Tests answer with ZEROBRIDGE_CLIP_ANSWER=allow|hour|deny instead. */
 function ask(who: string): { answer: Promise<Answer>; cancel: () => void } {
   const preset = process.env.ZEROBRIDGE_CLIP_ANSWER;
   if (preset) return { answer: Promise.resolve(preset === "hour" ? "hour" : preset === "allow" ? "once" : false), cancel: () => {} };
+  if (process.platform === "linux") return askLinux(who);
   if (process.platform !== "darwin") return { answer: Promise.resolve(false), cancel: () => {} };
   const q = (s: string) => `"${s.replace(/["\\]/g, "")}"`;
   const script = `display dialog ${q(`${who} wants to see what's on your clipboard (a screenshot, copied files or text).`)} with title "0bridge" buttons {"Don't Allow", "Allow for 1 Hour", "Allow"} default button "Allow" cancel button "Don't Allow" giving up after 60 with icon caution`;
@@ -633,20 +710,24 @@ async function listen(ctx: Context): Promise<void> {
   }
 }
 
-/** Run `0b clip listen` at login and keep it running (macOS LaunchAgent). */
+/**
+ * Run `0b clip listen` at login and keep it running: on a Mac, or a Linux desktop with a dialog
+ * program to ask through (zenity, kdialog). Anywhere else nobody could be asked, so every request would be declined.
+ */
 function installListener(ctx: Context, on: boolean): void {
-  if (process.platform !== "darwin") {
+  const canAsk = process.platform === "darwin" || (process.platform === "linux" && linuxDialog() !== null);
+  if (on && !canAsk) {
     console.log(
-      on
-        ? "Answering clipboard requests belongs on the computer you copy on (your Mac): run `0b clip listen on` there. Agents on this machine read what it sends. (`0b clip listen` answers from this machine's clipboard, in this terminal.)"
-        : "Stop your `0b clip listen` process.",
+      "Answering clipboard requests belongs on the computer you copy on (a Mac, or a Linux desktop with zenity or kdialog): run `0b clip listen on` there. Agents on this machine read what it sends. (`0b clip listen` answers from this machine's clipboard, in this terminal.)",
     );
     return;
   }
-  installAgent(ctx, "dev.0bridge.clip", on ? ["clip", "listen"] : null, { keepAlive: true });
+  const where = installService(ctx, "clip", on ? ["clip", "listen"] : null, { keepAlive: true });
+  if (on && !where) return;
+  const machine = process.platform === "darwin" ? "This Mac" : "This computer";
   console.log(
     on
-      ? `${c.green("✓")} This Mac answers clipboard requests: when an agent asks, a dialog here asks you first.`
-      : `${c.green("✓")} This Mac no longer answers clipboard requests (0b clip still sends).`,
+      ? `${c.green("✓")} ${machine} answers clipboard requests: when an agent asks, a dialog here asks you first.`
+      : `${c.green("✓")} ${machine} no longer answers clipboard requests (0b clip still sends).`,
   );
 }

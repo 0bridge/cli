@@ -1,0 +1,4 @@
+{"role": "system", "content": "You are an AI coding assistant, powered by Composer."}
+{"role": "user", "content": "<user_info>\nOS Version: linux\n</user_info>\n\n<git_status>clean</git_status>"}
+{"role": "user", "content": [{"type": "text", "text": "<timestamp>Saturday, Sep 26, 2026, 11:43 AM (UTC)</timestamp>\n<user_query>\nReply with exactly LIVE-CURSOR-OK\n</user_query>"}], "providerOptions": {"cursor": {"requestId": "r1"}}}
+{"role": "assistant", "content": [{"type": "reasoning", "text": "", "signature": "sig"}, {"type": "text", "text": "LIVE-CURSOR-OK"}], "id": "msg_1"}

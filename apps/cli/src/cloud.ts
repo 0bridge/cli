@@ -2,8 +2,8 @@ import * as p from "@clack/prompts";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { hostname } from "node:os";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import {
   getAdapters,
   BRIDGE_SKILL,
@@ -49,9 +49,12 @@ import {
   type Context,
 } from "@0bridge/core";
 import { searchRegistry, withRegistry } from "@0bridge/core/mcp-registry";
+import { qrPng, qrTerminal, qrTerminalWidth } from "@0bridge/core/qr";
+import { AGENT_VM_DEVICE_SCOPE } from "@0bridge/core/agent-vm";
 import { c, canOpenBrowser, planSummary, spinner, where } from "./ui.ts";
 import { loginInto } from "./profile.ts";
 import { unlinkAccount } from "./project.ts";
+import { attachWithSession } from "./agent-vm.ts";
 
 const b64url = (buf: ArrayBuffer | Uint8Array) =>
   Buffer.from(buf instanceof Uint8Array ? buf : new Uint8Array(buf)).toString("base64url");
@@ -186,42 +189,132 @@ async function oauthSignIn(server: string): Promise<string> {
 
 const CLI_CLIENT_ID = "0b-cli";
 
+/** A device sign-in in progress (RFC 8628): what to show the user and what to poll with. Plain JSON, so it can be saved and resumed. */
+export interface DeviceStart {
+  deviceCode: string;
+  /** As shown: ABCD-2345. */
+  userCode: string;
+  /** verification_uri_complete (absolute). */
+  link: string;
+  /** verification_uri (absolute). */
+  verifyUrl: string;
+  /** 2 digits when a sign-in hint was filed (the dashboard asks to pick it). */
+  match: string | null;
+  /** Seconds between polls. */
+  interval: number;
+  expiresAt: number;
+  /** Why the account couldn't be asked on its dashboard, when a hint was wanted but not filed. */
+  hintNote?: string;
+}
+
+/** The machine as a sign-in hint names it on the dashboard ("muse-vm · Linux · agent VM"). */
+export type HintMachine = { name: string; os: string; arch: string; kind: "cli" | "agent-vm"; platform?: string };
+
 /**
  * Device authorization grant (RFC 8628), like `gh auth login`: works on this machine, over SSH,
- * in containers — approve from any browser, even a phone. Returns a short-lived session token.
+ * in containers — approve from any browser, even a phone. `hint` names the account to ask on its
+ * dashboard (push approval, round 2): the server answers with the number the dashboard will ask
+ * for, and the same whether or not that account exists.
  */
-async function deviceSignIn(server: string): Promise<string> {
+export async function startDeviceSignIn(server: string, opts: { hint?: { email: string; machine: HintMachine }; agentVm?: boolean } = {}): Promise<DeviceStart> {
+  server = server.replace(/\/+$/, "");
   const res = await fetch(`${server}/auth/device/code`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ client_id: CLI_CLIENT_ID }),
+    // An agent's computer says so up front: the approval page shows it, and the session can only make its token.
+    body: JSON.stringify({ client_id: CLI_CLIENT_ID, ...(opts.agentVm ? { scope: AGENT_VM_DEVICE_SCOPE } : {}) }),
   });
   if (!res.ok) throw new Error(`could not start sign-in (${res.status})`);
-  const dc = (await res.json()) as { device_code: string; user_code: string; verification_uri: string; verification_uri_complete: string; interval?: number };
-  const code = dc.user_code.length === 8 ? `${dc.user_code.slice(0, 4)}-${dc.user_code.slice(4)}` : dc.user_code;
-  const verifyUrl = new URL(dc.verification_uri, server).href;
-  const completeUrl = new URL(dc.verification_uri_complete, server).href;
-
-  p.note(`${c.bold(code)}\n\n${c.dim("Approve at")} ${c.cyan(verifyUrl)}`, "Your one-time code");
-  if (canOpenBrowser()) {
-    openBrowser(completeUrl);
-    p.log.info(`Opened your browser. ${c.dim("Check the code matches, then approve.")}`);
-  } else {
-    p.log.info("Open the link on any device (your laptop or phone) and enter the code.");
+  const dc = (await res.json()) as { device_code: string; user_code: string; verification_uri: string; verification_uri_complete: string; interval?: number; expires_in?: number };
+  const s: DeviceStart = {
+    deviceCode: dc.device_code,
+    userCode: dc.user_code.length === 8 ? `${dc.user_code.slice(0, 4)}-${dc.user_code.slice(4)}` : dc.user_code,
+    link: new URL(dc.verification_uri_complete, server).href,
+    verifyUrl: new URL(dc.verification_uri, server).href,
+    match: null,
+    interval: dc.interval ?? 5,
+    expiresAt: Date.now() + (dc.expires_in ?? 600) * 1000,
+  };
+  if (opts.hint) {
+    try {
+      const h = await fetch(`${server}/device/hint`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ device_code: s.deviceCode, email: opts.hint.email, machine: opts.hint.machine }),
+      });
+      const body = (await h.json().catch(() => ({}))) as { match?: string; error?: string; error_description?: string };
+      if (h.ok && body.match) s.match = body.match;
+      else s.hintNote = `couldn't ask ${opts.hint.email} on the dashboard (${body.error_description ?? body.error ?? h.status}); use the link`;
+    } catch (e) {
+      s.hintNote = `couldn't ask ${opts.hint.email} on the dashboard (${(e as Error).message}); use the link`;
+    }
   }
+  return s;
+}
 
+/** What `printSignInLink` writes, line by line; split out so it can be checked without a terminal. */
+export function signInLines(s: DeviceStart, opts: { tty: boolean; columns?: number; savedQr?: string | null; qrError?: string | null }): string[] {
+  const out = [
+    // Alone and first, with nothing around it: agents relay this line verbatim.
+    s.link,
+    `${c.dim("Open it on any device (your laptop or phone) and check it shows")} ${c.bold(s.userCode)}${s.match ? c.dim(",") : c.dim(".")}`,
+  ];
+  if (s.match) out.push(`${c.dim("or approve it on your dashboard")} ${new URL("/app/approvals", s.link).href}${c.dim(": pick")} ${c.bold(s.match)}`);
+  if (s.hintNote) out.push(c.yellow(`! ${s.hintNote}`));
+  // A terminal QR only where it fits: a phone scans it straight off the screen.
+  if (opts.tty && (opts.columns ?? 80) >= Math.max(45, qrTerminalWidth(s.link))) out.push("", qrTerminal(s.link), "");
+  if (opts.savedQr) out.push(`Saved a QR code: ${opts.savedQr}`);
+  if (opts.qrError) out.push(c.yellow(`! couldn't save the QR code (${opts.qrError})`));
+  return out;
+}
+
+/**
+ * Show where to approve. In order: the link alone on its line; the code (and "pick <match> on the
+ * dashboard" when a hint was filed); a terminal QR when `tty`; "Saved a QR code: <file>" with `qr`
+ * (a PNG, for agents that can show the user an image). Then the browser opens on the link when one can.
+ */
+export function printSignInLink(s: DeviceStart, opts: { tty: boolean; qr?: string }): void {
+  let savedQr: string | null = null;
+  let qrError: string | null = null;
+  if (opts.qr) {
+    try {
+      savedQr = resolve(opts.qr);
+      writeFileSync(savedQr, qrPng(s.link));
+    } catch (e) {
+      [savedQr, qrError] = [null, (e as Error).message];
+    }
+  }
+  for (const line of signInLines(s, { tty: opts.tty, columns: process.stdout.columns, savedQr, qrError })) console.log(line);
+  if (canOpenBrowser()) {
+    openBrowser(s.link);
+    console.log(c.dim("Opened your browser."));
+  }
+}
+
+/** The bootstrap session token once approved; "pending" when `untilMs` (a time) passes first. Throws on denied/expired. */
+export async function pollDeviceSignIn(server: string, s: DeviceStart, opts: { untilMs?: number } = {}): Promise<string | "pending"> {
+  server = server.replace(/\/+$/, "");
   const spin = spinner();
   spin.start("Waiting for approval");
-  let interval = (dc.interval ?? 5) * 1000;
-  const deadline = Date.now() + 10 * 60_000;
+  let interval = s.interval * 1000;
+  const deadline = Math.min(s.expiresAt, opts.untilMs ?? Infinity);
+  // A wait can be long (an agent VM's owner approves later): a dropped connection or a 5xx
+  // is tried again on the next poll, up to 5 in a row.
+  let failures = 0;
   try {
     while (Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, interval));
+      await new Promise((r) => setTimeout(r, Math.min(interval, Math.max(0, deadline - Date.now()))));
       const t = await fetch(`${server}/auth/device/token`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ grant_type: "urn:ietf:params:oauth:grant-type:device_code", device_code: dc.device_code, client_id: CLI_CLIENT_ID }),
+        body: JSON.stringify({ grant_type: "urn:ietf:params:oauth:grant-type:device_code", device_code: s.deviceCode, client_id: CLI_CLIENT_ID }),
+      }).catch((e: unknown) => {
+        if (++failures > 5) throw e;
+        return null;
       });
+      if (!t) continue;
+      if (t.status >= 500 && ++failures <= 5) continue;
+      failures = 0;
       const body = (await t.json().catch(() => ({}))) as { access_token?: string; error?: string; error_description?: string };
       if (body.access_token) {
         spin.stop("Approved");
@@ -234,6 +327,10 @@ async function deviceSignIn(server: string): Promise<string> {
       }
       throw new Error(body.error === "access_denied" ? "sign-in was denied" : body.error === "expired_token" ? "the code expired — run `0b login` again" : (body.error_description ?? `sign-in failed (${t.status})`));
     }
+    if (opts.untilMs !== undefined && Date.now() < s.expiresAt) {
+      spin.stop("Not approved yet");
+      return "pending";
+    }
     throw new Error("the code expired — run `0b login` again");
   } catch (e) {
     spin.error("Sign-in failed");
@@ -241,7 +338,26 @@ async function deviceSignIn(server: string): Promise<string> {
   }
 }
 
-export async function login(ctx: Context, server = process.env.ZEROBRIDGE_SERVER ?? DEFAULT_SERVER, opts: { web?: boolean; embedded?: boolean } = {}): Promise<void> {
+/** What this machine is called in a sign-in hint. */
+export function hintMachine(agentVm?: { name: string; platform?: string }): HintMachine {
+  return { name: (agentVm?.name ?? hostname()).slice(0, 64), os: process.platform, arch: process.arch, kind: agentVm ? "agent-vm" : "cli", ...(agentVm?.platform ? { platform: agentVm.platform } : {}) };
+}
+
+/** The device flow from start to approval: a short-lived session token. */
+async function deviceSignIn(server: string, opts: { qr?: string; email?: string; agentVm?: { name: string; platform?: string } } = {}): Promise<string> {
+  const s = await startDeviceSignIn(server, { ...(opts.email ? { hint: { email: opts.email, machine: hintMachine(opts.agentVm) } } : {}), agentVm: Boolean(opts.agentVm) });
+  printSignInLink(s, { tty: Boolean(process.stdout.isTTY), ...(opts.qr ? { qr: opts.qr } : {}) });
+  const token = await pollDeviceSignIn(server, s);
+  // Without untilMs, polling only ends approved or with an error.
+  if (token === "pending") throw new Error("the code expired — run `0b login` again");
+  return token;
+}
+
+export async function login(
+  ctx: Context,
+  server = process.env.ZEROBRIDGE_SERVER ?? DEFAULT_SERVER,
+  opts: { web?: boolean; embedded?: boolean; qr?: string; email?: string; agentVm?: { name: string; days: number; platform?: string } } = {},
+): Promise<void> {
   server = server.replace(/\/+$/, "");
   if (!opts.embedded) p.intro(c.bold(" 0bridge login "));
   const before = loadAccounts(ctx);
@@ -251,10 +367,13 @@ export async function login(ctx: Context, server = process.env.ZEROBRIDGE_SERVER
   if (current && !opts.embedded)
     p.log.info(`Signed in as ${c.bold(accountName(current))}${before.accounts.length > 1 ? ` and ${before.accounts.length - 1} more` : ""}. Signing in with another account adds it; pick the account in the browser.`);
   // Either flow yields a short-lived credential that is used once, to mint this device's long-lived token.
-  const bootstrap = opts.web ? await oauthSignIn(server) : await deviceSignIn(server);
+  // --email (or ZEROB_EMAIL) names the account to ask on its dashboard, besides the link.
+  const email = opts.email ?? (process.env.ZEROB_EMAIL || undefined);
+  const bootstrap = opts.web ? await oauthSignIn(server) : await deviceSignIn(server, { ...opts, email });
   const spin = spinner();
   spin.start("Creating a token for this device");
-  const { token } = await new CloudClient(server, bootstrap).createToken(`${hostname()} · 0b CLI`);
+  // An AI agent's computer gets an expiring token labeled as one (agent-vm.ts); anything else a device token.
+  const { token } = opts.agentVm ? await attachWithSession(server, bootstrap, opts.agentVm) : await new CloudClient(server, bootstrap).createToken(`${hostname()} · 0b CLI`);
   if (!opts.web) {
     // Drop the web session the device flow created; the device token replaces it.
     await fetch(`${server}/auth/sign-out`, {
@@ -263,6 +382,20 @@ export async function login(ctx: Context, server = process.env.ZEROBRIDGE_SERVER
       body: "{}",
     }).catch(() => {});
   }
+  await saveLogin(ctx, server, token, before, spin);
+}
+
+/**
+ * Everything login does once it has a device token: replace this account's older token here,
+ * save the new one, point the manifest's gateway entry at the default account, and say so.
+ */
+export async function finishLogin(ctx: Context, server: string, token: string, opts: { embedded?: boolean } = {}): Promise<void> {
+  const spin = spinner();
+  spin.start("Saving the token for this device");
+  await saveLogin(ctx, server.replace(/\/+$/, ""), token, loadAccounts(ctx), spin);
+}
+
+async function saveLogin(ctx: Context, server: string, token: string, before: ReturnType<typeof loadAccounts>, spin: ReturnType<typeof spinner>): Promise<void> {
   const store = openSecretStore(ctx.storeDir);
   const me = await new CloudClient(server, token).me();
   // The same account again: its old token on this device is replaced, so revoke it.
@@ -437,7 +570,8 @@ export async function connectCommand(
   if (opts.spec) return connectSpecCommand(ctx, service, opts.spec, opts);
   // In the user's own terminal with nothing decided on the command line: show every way in and let them pick.
   let url = urlArg;
-  if (!opts.api && !urlArg && !opts.clientId && !opts.headers && !opts.yes && process.stdin.isTTY) {
+  // --app already says which way (Slack: the workspace's own app, or 0bridge's), so no menu.
+  if (!opts.api && !urlArg && !opts.clientId && !opts.headers && !opts.yes && !opts.app && process.stdin.isTTY) {
     const way = await chooseWay(ctx, service);
     if (way.kind === "cli") return connectCli(ctx, way.cli, opts.label);
     if (way.kind === "preset") return connectApiCommand(ctx, way.service, opts);

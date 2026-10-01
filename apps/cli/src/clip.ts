@@ -94,10 +94,38 @@ JSON.stringify({ files, image, text: text && !text.isNil() ? text.js : null });`
 /** The real `xclip` / `wl-paste`, skipping 0bridge's own shims (`0b clip shims`) in ~/.0bridge/bin. */
 function realBin(name: string): string | null {
   for (const d of (process.env.PATH ?? "").split(delimiter)) {
-    if (!d || d.includes(`${"/"}.0bridge${"/"}bin`)) continue;
-    if (existsSync(join(d, name))) return join(d, name);
+    if (d && existsSync(join(d, name)) && !isOurShim(join(d, name))) return join(d, name);
   }
   return null;
+}
+
+const SHIM_MARK = "# 0bridge: ⌃V pastes";
+/** One of our stand-ins (`0b clip shims`), wherever it was put. */
+function isOurShim(file: string): boolean {
+  try {
+    return readFileSync(file, "utf8").slice(0, 300).includes(SHIM_MARK);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Where the stand-ins go: a folder in your home that's already on PATH (~/.local/bin, where
+ * Claude Code itself lives), so nothing needs editing; else ~/.0bridge/bin, which you add.
+ */
+function shimDir(ctx: Context): { dir: string; onPath: boolean } {
+  const fallback = join(ctx.storeDir, "bin");
+  for (const d of (process.env.PATH ?? "").split(delimiter)) {
+    if (!d || !d.startsWith(`${ctx.home}/`) || d === fallback || !existsSync(d)) continue;
+    // Stop at a real xclip or wl-paste: ours must come first to be the one Claude Code runs.
+    if (["xclip", "wl-paste"].some((n) => existsSync(join(d, n)) && !isOurShim(join(d, n)))) break;
+    try {
+      writeFileSync(join(d, ".0b-write-test"), "");
+      rmSync(join(d, ".0b-write-test"));
+      return { dir: d, onPath: true };
+    } catch {}
+  }
+  return { dir: fallback, onPath: (process.env.PATH ?? "").split(delimiter).includes(fallback) };
 }
 
 /** Linux (X11 or Wayland): an image if there is one, else text. */
@@ -293,21 +321,25 @@ async function paste(ctx: Context, dir?: string): Promise<void> {
  * sync`), left in place so it can be pasted again; anything else goes to the real tool.
  */
 function installPasteShims(ctx: Context, on: boolean): void {
-  const dir = join(ctx.storeDir, "bin");
-  for (const name of ["xclip", "wl-paste"]) {
+  const names = ["xclip", "wl-paste"];
+  if (!on) {
+    // Ours only, wherever they are.
+    for (const d of new Set([join(ctx.storeDir, "bin"), ...(process.env.PATH ?? "").split(delimiter)]))
+      for (const n of names) if (d && isOurShim(join(d, n))) rmSync(join(d, n), { force: true });
+    return console.log(`${c.green("✓")} removed the xclip and wl-paste stand-ins`);
+  }
+  const { dir, onPath } = shimDir(ctx);
+  mkdirSync(dir, { recursive: true });
+  for (const name of names) {
     const f = join(dir, name);
-    if (!on) {
-      rmSync(f, { force: true });
-      continue;
-    }
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(f, `#!/bin/sh\n# 0bridge: ⌃V pastes the image you last copied on your Mac (0b clip sync); the rest goes to the real ${name}.\nexec "${process.execPath}" "${process.argv[1]}" clip shim ${name} -- "$@"\n`);
+    if (existsSync(f) && !isOurShim(f)) fail(`${f} is a real ${name}; not replacing it`);
+    writeFileSync(f, `#!/bin/sh\n${SHIM_MARK} the image you last copied on your Mac (0b clip sync); the rest goes to the real ${name}.\nexec "${process.execPath}" "${process.argv[1]}" clip shim ${name} -- "$@"\n`);
     chmodSync(f, 0o755);
   }
-  if (!on) return console.log(`${c.green("✓")} removed the xclip and wl-paste stand-ins`);
-  const onPath = (process.env.PATH ?? "").split(delimiter)[0] === dir;
-  console.log(`${c.green("✓")} ⌃V in Claude Code on this machine now pastes the image you last copied on your Mac (with ${c.cyan("0b clip sync on")} there).`);
+  console.log(`${c.green("✓")} ⌃V in Claude Code on this machine now pastes the image you last copied on your Mac (with ${c.cyan("0b clip sync on")} there). ${c.dim(`(${dir})`)}`);
   if (!onPath) console.log(`Put ${dir} first in your PATH (in ~/.zshrc or ~/.bashrc), then start Claude Code again:\n  ${c.cyan(`export PATH="${dir}:$PATH"`)}`);
+  else console.log(c.dim("Claude Code sessions already running use it on their next ⌃V."));
+  console.log(c.dim("With a Korean (or other non-English) input source on, ⌃V can arrive as a letter: switch to English first."));
 }
 
 /** One xclip / wl-paste call: images from 0bridge; everything else (and no image waiting) to the real tool. */

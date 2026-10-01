@@ -55,6 +55,7 @@ import { sessionsCommand } from "./sessions.ts";
 import { webhookCommand } from "./webhook.ts";
 import { usageCommand } from "./usage.ts";
 import { agentVmSetup } from "./agent-vm.ts";
+import { feedbackCommand } from "./feedback.ts";
 
 declare const VERSION: string;
 const version = typeof VERSION !== "undefined" ? VERSION : "dev";
@@ -198,6 +199,10 @@ ${c.bold("Usage")}
   0b profile unuse | remove <name> | shims
   0b backups                   List apply backups
   0b restore <id>              Undo an apply
+  0b feedback [message]        Tell the 0bridge team what's wrong or what you'd like ($EDITOR or a
+        [--kind idea|other]     prompt without a message). Shows the whole report and asks first.
+        [--include-logs]        --include-logs adds the last lines of 0b's logs here, masked and shown
+        [--yes]                 first; --yes is for an agent after you've read it and agreed
 
 ${c.bold("Tools")}  ${TOOL_IDS.join(", ")}
 ${c.bold("Store")}  ${paths(defaultContext()).manifest}
@@ -465,6 +470,8 @@ async function main() {
       by: { type: "string" },
       state: { type: "string" },
       json: { type: "boolean" },
+      kind: { type: "string" },
+      "include-logs": { type: "boolean" },
     },
   });
   const [cmd, ...rest] = positionals;
@@ -592,6 +599,8 @@ async function main() {
       return usageCommand(ctx, rest, { days: values.days, by: values.by, json: values.json, quiet: values.quiet });
     case "tool":
       return tool(rest);
+    case "feedback":
+      return feedbackCommand(ctx, rest, { kind: values.kind, includeLogs: values["include-logs"], yes: values.yes }, version);
     case "login":
       await login(ctx, values.server, { web: values.web, qr: values.qr, email: values.email });
       if (interactive()) await syncFlow(ctx);

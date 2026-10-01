@@ -109,6 +109,12 @@ When the user asks to set up this machine or a repo ("sync the backend dev envir
 
 - \`0b tree\`: cloud connections, MCP servers, skills and instructions at a glance.
 - Something was added to a tool directly? \`0b import\`, then \`0b apply --yes\`.
+
+## When 0bridge itself fails
+
+- If a \`0b\` command, a \`bridge__\` tool or a connection fails in a way that looks like a 0bridge bug (not the user's code, not a service's own error, not a missing sign-in the output tells you how to fix), offer to send the 0bridge team a report. The user may also ask you to send feedback or an idea.
+- Write it to be reproducible: what you were doing, the exact commands, the error text, what you expected and what happened, and \`0b --version\`, your tool and the OS. Leave out secret values, tokens, file contents and personal details beyond what's needed.
+- Show the user the whole report and send it only after they say yes. \`0b feedback --kind problem "<report>"\` without \`--yes\` prints exactly what would be sent (with \`--include-logs\`, 0b's recent log lines too, masked) and sends nothing: show that, and once they agree run it again with \`--yes\`. Or use the \`bridge__feedback\` tool.
 `;
 
 /**
@@ -159,6 +165,7 @@ The user keeps secrets in their 0bridge vault: encrypted on their machines, per 
 - Don't read \`.env\` files to find values; use \`0b exec\`.
 - \`.env\` still works and isn't forbidden. If the user wants to keep using it, that's their call.
 - A new machine that can't open the vault ("run \`0b vault unlock\`"): you may run \`0b vault unlock\`. It prints a code and waits while the user approves in their browser (passkey) or runs \`0b vault approve\` on another machine; tell them to check the code matches. \`--recovery-key\`, \`0b vault approve\` and \`0b vault recovery-key\` are for the user in their own terminal; don't run them.
+- \`0b exec\` or \`0b secret\` failing in a way that looks like a 0bridge bug: offer to report it with \`0b feedback\` (see the \`0bridge\` skill). Show the user the report first, and never put a value in it.
 `;
 
 /**

@@ -19,6 +19,7 @@ export const SECRET_PATTERNS: RegExp[] = [
   /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, // JWT
   /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
   /\b0B(?:-[A-Z2-7]{4}){13}\b/g, // 0bridge vault recovery key
+  /\b0b_[A-Za-z0-9_-]{20,}/g, // 0bridge device token
   /(?<=:\/\/[^\s/:@]+:)[^\s/@]{6,}(?=@)/g, // password in a URL
   // KEY=value / "token": "value" where the name says it's a secret
   /(?<=\b[A-Za-z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|API_?KEY|PRIVATE_KEY|ACCESS_KEY)[A-Za-z0-9_]*["']?\s*[:=]\s*["']?)[^\s"'`,;]{8,}/gi,

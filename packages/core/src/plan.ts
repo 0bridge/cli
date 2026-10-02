@@ -4,7 +4,7 @@ import type { Context, Manifest, McpServer, SkillEntry, State, ToolId } from "./
 import { TOOL_IDS } from "./types.ts";
 import { claudeMirrors, codexMirrors, getAdapters, isInstalled, portableKey, projectAdapters, type Adapter } from "./adapters.ts";
 import type { SecretStore } from "./secrets.ts";
-import { addManaged, paths, projectScope, projectSkillsDir, resolveServer, targets, toolEnabled, toolInstructions } from "./store.ts";
+import { addManaged, paths, projectScope, projectSkillsDir, resolveServer, serverFor, targets, toolEnabled, toolInstructions } from "./store.ts";
 import { copySkill, listSkills, sameSkill } from "./skills.ts";
 import { applyBlock, extractUnmanaged } from "./instructions.ts";
 import { excludeFromGit, gitTracked } from "./git.ts";
@@ -71,7 +71,7 @@ function sameAsInstalled(desired: McpServer, installed: McpServer, tool: ToolId)
   );
 }
 
-function planMcp(a: Adapter, m: Pick<Manifest, "mcpServers">, state: State, store: SecretStore, missing: Set<string>, warnings: string[]): FileChange | null {
+function planMcp(a: Adapter, m: Pick<Manifest, "mcpServers"> & Partial<Pick<Manifest, "tools">>, state: State, store: SecretStore, missing: Set<string>, warnings: string[]): FileChange | null {
   const tool = a.id;
   const before = readText(a.configPath);
   const installed = a.readServers(before);
@@ -86,7 +86,7 @@ function planMcp(a: Adapter, m: Pick<Manifest, "mcpServers">, state: State, stor
       warnings.push(`${a.label}: skipped ${name} (SSE transport not supported; switch the server to its streamable HTTP URL)`);
       continue;
     }
-    const desired = resolveServer(entry, store, missing);
+    const desired = resolveServer(serverFor(m, name, entry, tool), store, missing);
     const current = installed[name];
     if (current && sameAsInstalled(desired, current, tool)) {
       addManaged(managed, name);
@@ -489,7 +489,7 @@ export function computeStatus(ctx: Context, m: Manifest, store: SecretStore): St
       else if (entry.transport === "sse" && !a.supportsSse) cells[t] = "unsupported";
       else if (entry.enabled === false && !a.supportsDisabled) cells[t] = cur ? "differs" : "off";
       else if (!cur) cells[t] = "missing";
-      else cells[t] = sameAsInstalled(resolveServer(entry, store), cur, t) ? (entry.enabled === false ? "off" : "ok") : "differs";
+      else cells[t] = sameAsInstalled(resolveServer(serverFor(m, name, entry, t), store), cur, t) ? (entry.enabled === false ? "off" : "ok") : "differs";
     }
     status.mcp.push({ name, cells });
   }

@@ -1,4 +1,3 @@
-import * as p from "@clack/prompts";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { hostname } from "node:os";
@@ -48,10 +47,10 @@ import {
   type OAuthClient,
   type Context,
 } from "@0bridge/core";
-import { searchRegistry, withRegistry } from "@0bridge/core/mcp-registry";
+import { registryFirst, withRegistry } from "@0bridge/core/mcp-registry";
 import { qrPng, qrTerminal, qrTerminalWidth } from "@0bridge/core/qr";
 import { AGENT_VM_DEVICE_SCOPE } from "@0bridge/core/agent-vm";
-import { c, canOpenBrowser, planSummary, spinner, where } from "./ui.ts";
+import { c, canOpenBrowser, p, planSummary, spinner, where } from "./ui.ts";
 import { loginInto } from "./profile.ts";
 import { unlinkAccount } from "./project.ts";
 import { attachWithSession } from "./agent-vm.ts";
@@ -589,11 +588,13 @@ export async function connectCommand(
   url ??= PRESETS[service.toLowerCase()];
   if (!url) {
     // Not one 0bridge knows by name: find its MCP server or its API document.
-    // The MCP registry is slow to answer 0bridge's server, so ask it from here at the same time.
+    // The MCP registry from 0bridge's daily index at the same time; from the registry itself (slow) only while there's none.
     const plain = /[./]/.test(service) ? "" : service.toLowerCase().replace(/[^a-z0-9-]+/g, "-");
-    const [found, reg] = await Promise.all([cloudClient(ctx).client.discover(service), plain ? searchRegistry(service, plain, { timeoutMs: 10_000 }).catch(() => []) : Promise.resolve([])]);
+    const { client } = cloudClient(ctx);
+    const registry = (q: string, name: string, timeoutMs: number) => registryFirst(() => client.registry(q, name), q, name, { timeoutMs });
+    const [found, reg] = await Promise.all([client.discover(service), plain ? registry(service, plain, 10_000) : Promise.resolve([])]);
     let d = withRegistry(found, reg);
-    if (!plain) d = withRegistry(d, await searchRegistry(d.service, d.service, { timeoutMs: 6000 }).catch(() => []));
+    if (!plain) d = withRegistry(d, await registry(d.service, d.service, 6000));
     const best = d.best;
     const others = d.candidates.filter((x) => x !== best);
     if (!best) {
@@ -663,9 +664,10 @@ async function chooseWay(ctx: Context, service: string): Promise<Way> {
   const plain = /[./]/.test(service) ? "" : service.toLowerCase().replace(/[^a-z0-9-]+/g, "-");
   const s = p.spinner();
   s.start(`Looking for ${service}'s MCP server, API and CLI`);
+  const { client } = cloudClient(ctx);
   const [found, reg] = await Promise.all([
-    cloudClient(ctx).client.discover(service),
-    plain && !PRESETS[plain] ? searchRegistry(service, plain, { timeoutMs: 10_000 }).catch(() => []) : Promise.resolve([]),
+    client.discover(service),
+    plain && !PRESETS[plain] ? registryFirst(() => client.registry(service, plain), service, plain, { timeoutMs: 10_000 }) : Promise.resolve([]),
   ]);
   const d = withRegistry(found, reg);
   s.stop(`${service}: ${d.candidates.length ? `found ${d.candidates.length} way${d.candidates.length === 1 ? "" : "s"} in` : "nothing found by name"}`);

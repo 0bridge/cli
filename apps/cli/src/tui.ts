@@ -1,4 +1,3 @@
-import * as p from "@clack/prompts";
 import { mkdirSync } from "node:fs";
 import {
   PRESETS,
@@ -26,7 +25,7 @@ import {
   type McpServer,
   type ToolId,
 } from "@0bridge/core";
-import { c, kindLabel, planSummary, printPlan, printStatus, printWarnings, skillDescription, spinner, tilde, where } from "./ui.ts";
+import { c, kindLabel, p, planSummary, printPlan, printStatus, printWarnings, skillDescription, spinner, tilde, where } from "./ui.ts";
 import { askLabel, cloudClient, connectCommand, connectService, login, migrateTui, renameConnection } from "./cloud.ts";
 import { printTree } from "./tree.ts";
 
@@ -258,7 +257,7 @@ export async function chooseTools(ctx: Context): Promise<void> {
       required: true,
     }),
   );
-  for (const t of TOOL_IDS) m.tools[t] = { enabled: picked.includes(t) };
+  for (const t of TOOL_IDS) m.tools[t] = { ...m.tools[t], enabled: picked.includes(t) };
   saveManifest(ctx, m);
 }
 

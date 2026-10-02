@@ -89,6 +89,9 @@ ${c.bold("Usage")}
   0b status tools              What's in sync across tools (MCP servers, skills, instructions)
   0b apply [--only t,...]      Write the manifest into each tool (shows a diff, asks first)
         [--yes] [--dry-run]
+  0b apply --only cursor       That tool's 0bridge entry lists three search tools in place of the connected
+        --tool-search auto     services' tools: above 80 of them (auto), always (search), or never (all, the
+                               default). For tools that load every tool at once; kept in the manifest
   0b mcp list
   0b mcp add <name> --url <url> [--header K=V]... [--only t,...]
   0b mcp add <name> [--env K=V]... [--only t,...] -- <command> [args...]
@@ -153,8 +156,11 @@ ${c.bold("Usage")}
   0b history hooks on|off      Upload each conversation as its turn ends (Claude Code, Codex, Cursor)
   0b context push|pull|sync|status  Your profile, global instructions and skills, on 0bridge for every AI app
   0b context rm <skill>        Remove a skill from 0bridge and your machines
-  0b team                      Your team workspaces: their connectors (which you have), skills and
-                               instructions; brings the skills (as <team>--<skill>) and instructions here
+  0b team                      Your team workspaces: their connectors (which you have), shared keys, skills
+                               and instructions; brings the skills (as <team>--<skill>) and instructions here
+  0b team skill push <folder>  As a team's admin: publish a skill to everyone (--name n; --workspace <team>
+                               when you run more than one); 0b team skill rm <name> takes it back
+  0b team instructions set <file>  As a team's admin: replace the team's instructions with the file's text
   0b context profile           Edit your profile (who you are, how you like to work)
   0b memory add|search|rm      Things your AIs should remember, searchable from any of them
   0b agent on|off|status       Let your AI apps start and steer coding agents on this machine
@@ -338,11 +344,33 @@ function runImport(m: Manifest, only?: ToolId[]) {
   printImport(report);
 }
 
-async function apply(values: { only?: string; yes?: boolean; "dry-run"?: boolean; "no-diff"?: boolean }) {
+/**
+ * `--tool-search auto|search|all`: how the named tools' 0bridge entry lists tools, kept in
+ * the manifest per tool. For a tool that loads every tool at once (Cursor); Claude Code and Codex
+ * search tools themselves, so it's never set for all tools at once.
+ */
+function setToolSearch(m: Manifest, only: ToolId[] | undefined, mode: string): void {
+  if (mode !== "auto" && mode !== "search" && mode !== "all") die('--tool-search is auto (search above 80 tools), search (always) or all (list every tool, the default)');
+  if (!only) die(`say which tools get it: ${c.cyan(`0b apply --only cursor --tool-search ${mode}`)} (Claude Code and Codex search tools themselves)`);
+  for (const t of only) {
+    const entry = (m.tools[t] ??= { enabled: true });
+    if (mode === "all") delete entry.toolSearch;
+    else entry.toolSearch = mode;
+  }
+}
+
+async function apply(values: { only?: string; yes?: boolean; "dry-run"?: boolean; "no-diff"?: boolean; "tool-search"?: string }) {
   const m = requireManifest(ctx);
   const s = store();
-  const plan = planApply(ctx, m, loadState(ctx), s, parseTools(values.only), { projects: true });
+  const only = parseTools(values.only);
+  if (values["tool-search"] !== undefined) setToolSearch(m, only, values["tool-search"]);
+  // Kept once it's written (or there's nothing to write), not on a dry run or a "no".
+  const keep = () => {
+    if (values["tool-search"] !== undefined) saveManifest(ctx, m);
+  };
+  const plan = planApply(ctx, m, loadState(ctx), s, only, { projects: true });
   if (!plan.changes.length) {
+    if (!values["dry-run"]) keep();
     printWarnings(ctx, plan);
     console.log(c.green("Everything is in sync."));
     return;
@@ -354,6 +382,7 @@ async function apply(values: { only?: string; yes?: boolean; "dry-run"?: boolean
     return console.log(c.dim(process.stdin.isTTY ? "Cancelled." : "Not a TTY — re-run with --yes to write."));
   }
   const id = executePlan(ctx, plan);
+  keep();
   console.log(`${c.green("Applied.")} Backup ${c.dim(id)} — undo with ${c.cyan(`0b restore ${id}`)}`);
   console.log(c.dim("Restart running agent sessions to pick up changes."));
 }
@@ -491,7 +520,7 @@ function tool(args: string[]) {
   const [id] = parseTools(t) ?? die("usage: 0b tool enable|disable <tool>");
   if (sub !== "enable" && sub !== "disable") die("usage: 0b tool enable|disable <tool>");
   const m = requireManifest(ctx);
-  m.tools[id!] = { enabled: sub === "enable" };
+  m.tools[id!] = { ...m.tools[id!], enabled: sub === "enable" };
   saveManifest(ctx, m);
   console.log(`${c.green("✓")} ${id} ${sub}d.`);
 }
@@ -507,6 +536,7 @@ async function main() {
       "dry-run": { type: "boolean" },
       check: { type: "boolean" },
       "no-diff": { type: "boolean" },
+      "tool-search": { type: "string" },
       url: { type: "string" },
       header: { type: "string", multiple: true },
       env: { type: "string", multiple: true },
@@ -572,6 +602,7 @@ async function main() {
       project: { type: "boolean" },
       shell: { type: "boolean" },
       dir: { type: "string" },
+      workspace: { type: "string" },
     },
   });
   const [cmd, ...rest] = positionals;
@@ -677,7 +708,7 @@ async function main() {
       return contextCommand(ctx, rest, { force: values.force, quiet: values.quiet, yes: values.yes });
     case "team":
     case "teams":
-      return teamCommand(ctx, rest);
+      return teamCommand(ctx, rest, { name: values.name, workspace: values.workspace });
     case "memory":
       return memoryCommand(ctx, rest, { tags: values.tags, yes: values.yes });
     case "agent":

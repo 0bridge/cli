@@ -1,4 +1,3 @@
-import * as p from "@clack/prompts";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { hostname } from "node:os";
@@ -6,7 +5,7 @@ import { delimiter, join } from "node:path";
 import { CloudError, openValue, writeAtomic, type Context } from "@0bridge/core";
 import { cloudClient } from "./cloud.ts";
 import { localKey } from "./vault.ts";
-import { c } from "./ui.ts";
+import { c, p } from "./ui.ts";
 
 /**
  * `0b resume <0b:id>`: continue a session from any tool in the one here (Claude Code, Codex,

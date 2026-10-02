@@ -1,8 +1,7 @@
-import * as p from "@clack/prompts";
 import { readFileSync } from "node:fs";
 import { CloudError, type CloudClient, type Context } from "@0bridge/core";
 import { cloudClient } from "./cloud.ts";
-import { c } from "./ui.ts";
+import { c, p } from "./ui.ts";
 
 /**
  * `0b webhook` (round 2, D54): addresses other services send events to (Channel Talk, GitHub, any

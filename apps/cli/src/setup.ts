@@ -1,4 +1,3 @@
-import * as p from "@clack/prompts";
 import {
   deviceTokenKey,
   PRESETS,
@@ -17,7 +16,7 @@ import {
   type Context,
   type ToolId,
 } from "@0bridge/core";
-import { c, planSummary } from "./ui.ts";
+import { c, p, planSummary } from "./ui.ts";
 import { cloudClient, connectCommand, installBridgeSkill, login } from "./cloud.ts";
 import { chooseTools } from "./tui.ts";
 
@@ -68,7 +67,7 @@ export async function setup(ctx: Context, opts: SetupOptions): Promise<void> {
   else {
     const fresh = !loadManifest(ctx);
     const m = loadManifest(ctx) ?? emptyManifest();
-    if (opts.only || fresh) for (const t of TOOL_IDS) m.tools[t] = { enabled: (opts.only ?? installed).includes(t) };
+    if (opts.only || fresh) for (const t of TOOL_IDS) m.tools[t] = { ...m.tools[t], enabled: (opts.only ?? installed).includes(t) };
     saveManifest(ctx, m);
   }
   const m = loadManifest(ctx)!;

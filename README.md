@@ -35,7 +35,7 @@ Releases are built and published from this repository by GitHub Actions with [np
 
 ## Issues and security
 
-Bugs and questions: [issues](https://github.com/0bridge/cli/issues). Security problems: write to [support@0bridge.dev](mailto:support@0bridge.dev) instead of opening an issue.
+Bugs and questions: [issues](https://github.com/0bridge/cli/issues). Security problems: report them privately through the [contact form](https://0bridge.dev/contact?topic=security) instead of opening an issue.
 
 This repository mirrors the client from 0bridge's private monorepo, so pull requests may be applied there by hand rather than merged here.
 

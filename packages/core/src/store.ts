@@ -1,10 +1,11 @@
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { Context, Manifest, McpServer, ProjectScope, State, ToolId } from "./types.ts";
+import type { Context, Manifest, McpServer, ProjectScope, State, ToolId, ToolSearch } from "./types.ts";
 import { TOOL_IDS } from "./types.ts";
 import { readJson, readText, writeAtomic } from "./util.ts";
 import { resolveRefs, type SecretStore } from "./secrets.ts";
+import { GATEWAY_NAME } from "./cloud.ts";
 
 export function defaultContext(): Context {
   const home = process.env.ZEROBRIDGE_USER_HOME ?? homedir();
@@ -100,6 +101,18 @@ export function toolEnabled(m: Manifest, tool: ToolId): boolean {
 
 export function targets(entry: { targets?: ToolId[] }, tool: ToolId): boolean {
   return !entry.targets || entry.targets.includes(tool);
+}
+
+/** The gateway's address with `?tools=` for a tool search mode; unset: as is. */
+export const withToolSearch = (url: string, mode?: ToolSearch) => (mode ? `${url}${url.includes("?") ? "&" : "?"}tools=${mode}` : url);
+
+/**
+ * A server as `tool` gets it: the 0bridge gateway's entry with `?tools=` when tool search is on
+ * for that tool (`0b apply --only cursor --tool-search auto`). Every other server as is.
+ */
+export function serverFor(m: Partial<Pick<Manifest, "tools">>, name: string, s: McpServer, tool: ToolId): McpServer {
+  const mode = m.tools?.[tool]?.toolSearch;
+  return mode && name === GATEWAY_NAME && s.url ? { ...s, url: withToolSearch(s.url, mode) } : s;
 }
 
 /** Resolve every ref in a server definition. */

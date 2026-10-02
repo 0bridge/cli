@@ -1,8 +1,10 @@
-import { styleText } from "node:util";
+import { stripVTControlCharacters, styleText } from "node:util";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { Writable } from "node:stream";
 import { createTwoFilesPatch } from "diff";
-import * as p from "@clack/prompts";
+import * as clack from "@clack/prompts";
+import type { CommonOptions, LogMessageOptions, NoteOptions } from "@clack/prompts";
 import {
   computeStatus,
   getAdapters,
@@ -19,6 +21,35 @@ import {
 /** Colors only on a terminal (and not with NO_COLOR): agents and pipes read plain text. */
 const colors = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
 const style = (format: Parameters<typeof styleText>[0]) => (s: string) => (colors ? styleText(format, s) : s);
+
+/**
+ * clack's log lines, intro, outro, note and cancel, plain where `c` is. clack colors its symbols
+ * with node:util's styleText, which Node leaves out when stdout isn't a terminal but Bun doesn't,
+ * so off a terminal they go through a stdout that drops escape codes. Only what 0b prints changes:
+ * nothing is set in the environment, so `0b exec`'s commands still decide their own colors.
+ */
+const plainStdout = { write: (s: string) => process.stdout.write(stripVTControlCharacters(String(s))) } as unknown as Writable;
+const plain = <O extends CommonOptions>(o?: O): O | undefined => (colors ? o : ({ ...o, output: plainStdout } as O));
+const log = (f: (m: string, o?: LogMessageOptions) => void) => (m: string, o?: LogMessageOptions) => f(m, plain(o));
+
+/** What every command uses as `p`: clack itself, with the lines above plain off a terminal. */
+export const p = {
+  ...clack,
+  log: {
+    ...clack.log,
+    message: (m?: string | string[], o?: LogMessageOptions) => clack.log.message(m, plain(o)),
+    info: log(clack.log.info),
+    success: log(clack.log.success),
+    step: log(clack.log.step),
+    warn: log(clack.log.warn),
+    warning: log(clack.log.warning),
+    error: log(clack.log.error),
+  },
+  intro: (title?: string, o?: CommonOptions) => clack.intro(title, plain(o)),
+  outro: (message?: string, o?: CommonOptions) => clack.outro(message, plain(o)),
+  cancel: (message?: string, o?: CommonOptions) => clack.cancel(message, plain(o)),
+  note: (message?: string, title?: string, o?: NoteOptions) => clack.note(message, title, plain(o)),
+};
 
 /** Browsers can't be opened over SSH or without a display; print the link instead. */
 export const canOpenBrowser = () =>

@@ -280,7 +280,7 @@ export async function agentVmSetup(ctx: Context, opts: AgentVmOptions): Promise<
   });
   await step("Tools", () => {
     const m = loadManifest(ctx) ?? emptyManifest();
-    for (const t of TOOL_IDS) m.tools[t] = { enabled: wanted.includes(t) };
+    for (const t of TOOL_IDS) m.tools[t] = { ...m.tools[t], enabled: wanted.includes(t) };
     installBridgeSkill(ctx, m);
     saveManifest(ctx, m);
     if (!tools.length) {

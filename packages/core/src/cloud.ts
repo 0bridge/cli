@@ -5,6 +5,7 @@ import type { Context, McpServer } from "./types.ts";
 import { readJson, writeAtomic } from "./util.ts";
 import { secretRef } from "./secrets.ts";
 import type { VaultState } from "./vault.ts";
+import type { RegistryIndexAnswer } from "./mcp-registry.ts";
 
 export const DEFAULT_SERVER = "https://0bridge.dev";
 /** Secret-store key of this device's gateway token. */
@@ -32,6 +33,8 @@ export interface HistoryStats {
   messages: number;
   bytes: number;
   tools: Record<string, number>;
+  /** On Free: since when sessions are shown, and how many older ones are kept out of view. Missing from older servers. */
+  window?: { days: number; since: number; older: number } | null;
 }
 export interface HistoryFilter {
   repo?: string;
@@ -413,8 +416,10 @@ export class CloudClient {
     return this.req<{ deleted: number }>(`/files?${new URLSearchParams({ ...(repo ? { repo } : {}), ...(path ? { path } : {}) })}`, { method: "DELETE" });
   }
   // ── Conversation history ──
-  historyStats() {
-    return this.req<HistoryStats>("/history");
+  /** `f`: count what the Free window hides of one repo or tool only. */
+  historyStats(f: Pick<HistoryFilter, "repo" | "tool"> = {}) {
+    const q = historyQuery(f);
+    return this.req<HistoryStats>(`/history${q ? `?${q}` : ""}`);
   }
   setHistoryMode(mode: "server" | "e2e") {
     return this.req<{ mode: string }>("/history/mode", { method: "PUT", body: JSON.stringify({ mode }) });
@@ -454,6 +459,10 @@ export class CloudClient {
   /** How to connect a service from its name or an address. */
   discover(q: string) {
     return this.req<Discovery>(`/connectors/discover?q=${encodeURIComponent(q)}`);
+  }
+  /** The official MCP registry from the gateway's daily index (mcp-registry.ts registryFirst). */
+  registry(q: string, service: string) {
+    return this.req<RegistryIndexAnswer>(`/connectors/registry?q=${encodeURIComponent(q)}&service=${encodeURIComponent(service)}`);
   }
   /** Give an API connection its key; several keys one per line. */
   setKey(id: string, key: string) {

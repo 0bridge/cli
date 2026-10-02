@@ -1,4 +1,3 @@
-import * as p from "@clack/prompts";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve, win32 } from "node:path";
@@ -20,7 +19,7 @@ import {
   writeAtomic,
   type Context,
 } from "@0bridge/core";
-import { c, canOpenBrowser } from "./ui.ts";
+import { c, canOpenBrowser, p } from "./ui.ts";
 import { vaultEnv } from "./vault.ts";
 
 export const binDir = (ctx: Context) => join(ctx.storeDir, "bin");

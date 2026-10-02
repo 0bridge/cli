@@ -3,8 +3,9 @@
  * server. Shared by the gateway, the dashboard and the CLI. The registry's search is slow (it
  * scans names: 15–45 s for a query it hasn't cached, from anywhere), so the gateway keeps its own
  * index of the registry, refreshed daily from the list pages (fast), and searches that
- * (apps/gateway/src/registry.ts); the browser and the CLI still ask the registry too and add what
- * they find to the gateway's discovery. An entry is the service's own ("official") when its
+ * (apps/gateway/src/registry.ts). The browser and the CLI search the index too (registryFirst) and
+ * ask the registry themselves only while there's none, adding what they find to the gateway's
+ * discovery. An entry is the service's own ("official") when its
  * namespace or its server's domain is the service's; the rest are other people's servers, never
  * picked on their own.
  */
@@ -48,6 +49,25 @@ export async function searchRegistry(q: string, service: string, opts: { fetcher
   if (!res.ok) throw new Error(`MCP registry: ${res.status}`);
   const j = (await res.json()) as { servers?: RegistryEntry[] };
   return registryCandidates(j.servers ?? [], service);
+}
+
+/** `GET /api/connectors/registry`: the gateway's index searched, or `indexed: false` while it has none. */
+export interface RegistryIndexAnswer {
+  indexed: boolean;
+  /** When the index's last full pass finished (0: the first is still going). */
+  at?: number;
+  candidates: RegistryCandidate[];
+}
+
+/**
+ * Registry entries for `service`, for the dashboard and the CLI: from the gateway's index
+ * (`fromIndex`, milliseconds), and from the registry's own slow search only when the gateway has
+ * no index or doesn't answer (a server from before the index).
+ */
+export async function registryFirst(fromIndex: () => Promise<RegistryIndexAnswer>, q: string, service: string, opts: { timeoutMs?: number } = {}): Promise<RegistryCandidate[]> {
+  const r = await fromIndex().catch(() => null);
+  if (r?.indexed) return r.candidates;
+  return searchRegistry(q, service, opts).catch(() => []);
 }
 
 /** An entry's streamable HTTP (or SSE) address: https, not a template, the latest active version. Null otherwise. */

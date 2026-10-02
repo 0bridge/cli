@@ -22,6 +22,7 @@ import {
   parseToml,
   readJson,
   repoOf,
+  withToolSearch,
   withVault,
   writeAtomic,
   type CloudProjects,
@@ -123,14 +124,14 @@ function writeToolConfigs(ctx: Context, root: string, entry: { url: string; toke
     }
   }
 
-  // Cursor: the checkout's .cursor/mcp.json.
+  // Cursor: the checkout's .cursor/mcp.json, with tool search as Cursor's global entry has it (0b apply --tool-search).
   if (existsSync(join(ctx.home, ".cursor"))) {
     const rel = ".cursor/mcp.json";
     const file = join(root, rel);
     if (tracked(root, rel)) console.log(c.yellow(`  Cursor: ${rel} is committed to git, so it's left alone (it would carry the token). Cursor keeps using the global endpoint here.`));
     else {
       const obj = readJsonFile(file);
-      if (entry) obj.mcpServers = { ...(obj.mcpServers ?? {}), [SERVER_NAME]: { url: entry.url, headers: auth } };
+      if (entry) obj.mcpServers = { ...(obj.mcpServers ?? {}), [SERVER_NAME]: { url: withToolSearch(entry.url, loadManifest(ctx)?.tools.cursor?.toolSearch), headers: auth } };
       else if (obj.mcpServers) delete obj.mcpServers[SERVER_NAME];
       const empty = !Object.keys(obj.mcpServers ?? {}).length && Object.keys(obj).every((k) => k === "mcpServers");
       if (empty) rmSync(file, { force: true });

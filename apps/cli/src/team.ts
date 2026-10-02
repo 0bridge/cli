@@ -1,9 +1,10 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
   PRESETS,
   addManaged,
   applyBlock,
+  checkSkill,
   claudeMirrors,
   copySkill,
   getAdapters,
@@ -13,6 +14,7 @@ import {
   loadState,
   paths,
   readJson,
+  readSkill,
   readText,
   saveManifest,
   saveState,
@@ -37,7 +39,8 @@ import { c } from "./ui.ts";
  * block gets after yours. Only ever copied from 0bridge: a team's admins change them on the
  * dashboard, and one they remove leaves this machine and its AI tools on the next sync (`0b team`,
  * `0b context pull|sync`, the background job). `0b connect --team` connects the team's connectors
- * you don't have yet, each with your own account.
+ * you don't have yet, each with your own account. An admin of a paid team also publishes from here
+ * (`0b team skill push|rm`, `0b team instructions set`), through the same API as the dashboard.
  */
 
 export interface TeamView {
@@ -49,6 +52,8 @@ export interface TeamView {
   paid: boolean;
   writable: boolean;
   connectors: { service: string; title: string; connected: boolean }[];
+  /** Keys the team holds for everyone: their tools are `<as>__<tool>`. */
+  connections?: { display: string; as: string; state: string; tools: number; toolsOn: number; readOnly: boolean }[];
   instructions: ContextDoc | null;
   skills: (ContextSkillMeta & { as: string })[];
 }
@@ -223,13 +228,87 @@ export function reportTeams(r: TeamReport, opts: { quiet?: boolean } = {}): bool
   return any;
 }
 
-/** `0b team`: your teams, what they share, which of their connectors you have; and bring their skills and instructions here. */
-export async function teamCommand(ctx: Context, args: string[]): Promise<void> {
-  const [sub] = args;
-  if (sub && sub !== "sync" && sub !== "status") {
-    console.error(c.red(`error: unknown subcommand "team ${sub}". Try: 0b team [sync] | 0b connect --team`));
-    process.exit(1);
+const USAGE = "0b team [sync] | 0b team skill push <folder> [--name n] | 0b team skill rm <name> | 0b team instructions set <file> (each with --workspace <team> when you run more than one) | 0b connect --team";
+
+function fail(msg: string): never {
+  console.error(c.red(`error: ${msg}`));
+  process.exit(1);
+}
+
+/** The team an admin publishes to: the one `--workspace` names (its key, name or id), or the only one they can change. */
+export function publishTo(teams: TeamView[], want: string | undefined): TeamView {
+  if (want) {
+    const w = want.trim().toLowerCase();
+    const t = teams.find((x) => x.id === want || x.key === w || x.name.toLowerCase() === w);
+    if (!t) fail(`you're not in a team "${want}" (yours: ${teams.map((x) => x.key).join(", ") || "none"})`);
+    if (!t.admin) fail(`only ${t.name}'s owner or admins publish to it`);
+    if (!t.paid) fail(`${t.name}'s Team subscription isn't active: what it shares can be used but not changed until the payment is updated in Billing`);
+    return t;
   }
+  const mine = teams.filter((x) => x.writable);
+  if (mine.length === 1) return mine[0]!;
+  if (!mine.length) fail(teams.some((x) => x.admin) ? "the Team subscription isn't active in any team you run: start the trial or update the payment in Billing" : "only a team's owner or admins publish to it, and you aren't one in any team");
+  return fail(`you run ${mine.length} teams: add --workspace ${mine.map((x) => x.key).join("|")}`);
+}
+
+/**
+ * `0b team skill push <folder>`: publish a skill folder to the team (SKILL.md and its other text
+ * files, as `0b context push` reads them); it reaches every member as <team>--<name> on their next
+ * sync. `0b team skill rm <name>` takes it away from everyone.
+ */
+async function teamSkill(client: CloudClient, teams: TeamView[], args: string[], opts: { name?: string; workspace?: string }): Promise<void> {
+  const [verb, arg] = args;
+  if (verb === "rm" || verb === "remove") {
+    if (!arg) fail("usage: 0b team skill rm <name> [--workspace <team>]");
+    const t = publishTo(teams, opts.workspace);
+    const name = arg.startsWith(`${t.key}--`) ? arg.slice(t.key.length + 2) : arg;
+    await client.call("DELETE", `/team/${encodeURIComponent(t.id)}/skills/${encodeURIComponent(name)}`);
+    return console.log(`${c.green("✓")} removed ${t.key}--${name} from team ${t.name}: it leaves every member's AI tools on their next sync`);
+  }
+  if (verb !== "push" || !arg) fail("usage: 0b team skill push <folder> [--name n] [--workspace <team>]   (the folder with SKILL.md in it)");
+  let dir = resolve(arg);
+  if (basename(dir) === "SKILL.md") dir = dirname(dir);
+  let check: ReturnType<typeof checkSkill>;
+  try {
+    check = checkSkill(dir);
+  } catch (e) {
+    fail(e instanceof Error ? e.message : String(e));
+  }
+  const name = opts.name ?? check.name;
+  const local = readSkill(dir, name)!;
+  const t = publishTo(teams, opts.workspace);
+  const r = await client.call<{ as: string; hash: string }>("PUT", `/team/${encodeURIComponent(t.id)}/skills/${encodeURIComponent(name)}`, { body: local.body, description: check.description, files: local.files });
+  for (const w of check.warnings) console.log(`  ${c.yellow("!")} ${w}`);
+  for (const s of local.skipped) console.log(`  ${c.yellow("!")} ${s.path} stays here: ${s.why}`);
+  console.log(`${c.green("✓")} published ${c.bold(r.as)} to team ${t.name}${Object.keys(local.files).length ? c.dim(` (SKILL.md and ${Object.keys(local.files).length} file${Object.keys(local.files).length === 1 ? "" : "s"})`) : ""}: members get it on their next sync`);
+}
+
+/** `0b team instructions set <file>`: the team's instructions, replaced by the file's text (empty clears them). */
+async function teamInstructions(client: CloudClient, teams: TeamView[], args: string[], opts: { workspace?: string }): Promise<void> {
+  const [verb, file] = args;
+  if (verb !== "set" || !file) fail("usage: 0b team instructions set <file> [--workspace <team>]");
+  let text: string;
+  try {
+    text = readFileSync(resolve(file), "utf8");
+  } catch {
+    fail(`can't read ${file}`);
+  }
+  const t = publishTo(teams, opts.workspace);
+  // Against what was there just now: another admin's change in between is a conflict, not lost.
+  const r = await client.call<ContextDoc | { error: string }>("PUT", `/team/${encodeURIComponent(t.id)}/instructions`, { text, base: t.instructions?.hash ?? null }, [409]);
+  if ("error" in r) fail(`another admin changed ${t.name}'s instructions just now: run it again to replace theirs`);
+  console.log(`${c.green("✓")} ${text.trim() ? `set team ${t.name}'s instructions (${text.trim().split("\n").length} lines)` : `cleared team ${t.name}'s instructions`}: members' AI tools get them on their next sync`);
+}
+
+/** `0b team`: your teams, what they share, which of their connectors you have; and bring their skills and instructions here. */
+export async function teamCommand(ctx: Context, args: string[], opts: { name?: string; workspace?: string } = {}): Promise<void> {
+  const [sub] = args;
+  if (sub === "skill" || sub === "skills" || sub === "instructions") {
+    const { client } = cloudClient(ctx);
+    const teams = await client.call<TeamView[]>("GET", "/team");
+    return sub === "instructions" ? teamInstructions(client, teams, args.slice(1), opts) : teamSkill(client, teams, args.slice(1), opts);
+  }
+  if (sub && sub !== "sync" && sub !== "status") fail(`unknown subcommand "team ${sub}". Try: ${USAGE}`);
   const { cfg, client } = cloudClient(ctx);
   const r = await syncTeams(ctx, client, cfg.userId);
   const { teams } = r;
@@ -237,9 +316,10 @@ export async function teamCommand(ctx: Context, args: string[]): Promise<void> {
   for (const t of teams) {
     console.log(`${c.bold(t.name)} ${c.dim(`· ${t.role}${t.paid ? "" : " · subscription not active: read-only"}`)}`);
     if (t.connectors.length) console.log(`  connectors    ${t.connectors.map((x) => (x.connected ? c.green(`✓ ${x.service}`) : c.yellow(`○ ${x.service}`))).join("  ")}`);
+    if (t.connections?.length) console.log(`  shared keys   ${t.connections.map((x) => `${x.as}__*${c.dim(`${x.readOnly ? " read-only" : ""}${t.paid ? "" : " paused"}`)}`).join("  ")}`);
     if (t.skills.length) console.log(`  skills        ${t.skills.map((s) => s.as).join(", ")}`);
     if (t.instructions) console.log(`  instructions  ${c.dim(`${t.instructions.text.trim().split("\n").length} lines`)}`);
-    if (!t.connectors.length && !t.skills.length && !t.instructions) console.log(c.dim("  nothing shared yet"));
+    if (!t.connectors.length && !t.connections?.length && !t.skills.length && !t.instructions) console.log(c.dim("  nothing shared yet"));
   }
   if (reportTeams(r)) console.log(c.dim(`In your AI tools now; run ${c.cyan("0b apply")} if one doesn't have them yet.`));
   if (teams.some((t) => t.connectors.some((x) => !x.connected))) console.log(`\nConnect the ones you don't have: ${c.cyan("0b connect --team")}`);

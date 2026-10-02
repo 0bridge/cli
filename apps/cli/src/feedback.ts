@@ -127,7 +127,7 @@ export async function feedbackCommand(ctx: Context, args: string[], opts: Feedba
   const kind = opts.kind ?? "problem";
   if (!KINDS.includes(kind as (typeof KINDS)[number])) throw new Error(`--kind is one of ${KINDS.join(", ")}`);
   const cloud = loadCloud(ctx);
-  if (!cloud) throw new Error("Not signed in. Run `0b login` first, or write to support@0bridge.dev.");
+  if (!cloud) throw new Error("Not signed in. Run `0b login` first, or write to us at https://0bridge.dev/contact.");
   const tty = Boolean(process.stdin.isTTY && process.stdout.isTTY);
   let message = args.join(" ").trim();
   if (!message) {
@@ -159,5 +159,5 @@ export async function feedbackCommand(ctx: Context, args: string[], opts: Feedba
   }
   // Refusals (too long, 10 an hour) come back as the gateway's own words.
   const r = await cloudClient(ctx).client.call<{ id: string }>("POST", "/feedback", report);
-  console.log(`${c.green("✓")} Sent as ${r.id}. Thank you. For a reply, write to support@0bridge.dev and mention ${r.id}.`);
+  console.log(`${c.green("✓")} Sent as ${r.id}. Thank you. For a reply, write through https://0bridge.dev/contact and mention ${r.id}.`);
 }

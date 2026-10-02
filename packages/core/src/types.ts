@@ -25,9 +25,16 @@ export interface SkillEntry {
   targets?: ToolId[];
 }
 
+/**
+ * How a tool's 0bridge entry lists tools: "auto" puts three search tools in front of them
+ * above 80, "search" always does. Unset: every tool, one by one.
+ */
+export type ToolSearch = "auto" | "search";
+
 export interface Manifest {
   version: 1;
-  tools: Partial<Record<ToolId, { enabled: boolean }>>;
+  /** `toolSearch`: `0b apply --only cursor --tool-search auto`, for a tool that loads every tool at once. */
+  tools: Partial<Record<ToolId, { enabled: boolean; toolSearch?: ToolSearch }>>;
   mcpServers: Record<string, McpServer>;
   skills: Record<string, SkillEntry>;
   instructions: { enabled: boolean; targets?: ToolId[] };

@@ -4,7 +4,7 @@ import type { Context, Manifest, McpServer, State, ToolId } from "./types.ts";
 import { TOOL_IDS } from "./types.ts";
 import { getAdapters, isInstalled, portableKey, projectAdapters } from "./adapters.ts";
 import { looksSecret, secretRef, type SecretStore } from "./secrets.ts";
-import { addManaged, managedOf, paths, projectScope, projectSkillsDir, readInstructions, resolveServer } from "./store.ts";
+import { addManaged, managedOf, paths, projectScope, projectSkillsDir, readInstructions, resolveServer, serverFor } from "./store.ts";
 import { copySkill, listSkills, sameSkill } from "./skills.ts";
 import { extractUnmanaged } from "./instructions.ts";
 import { hashDir, readText, writeAtomic } from "./util.ts";
@@ -152,7 +152,8 @@ export function importFromTools(ctx: Context, m: Manifest, state: State, store: 
     };
 
     if (!existing) add();
-    else if (portableKey(resolveServer(existing, store)) === portableKey(f.server)) {
+    // (The gateway's entry as that tool gets it: with ?tools= where tool search is on.)
+    else if (portableKey(resolveServer(serverFor(m, f.name, existing, f.tool), store)) === portableKey(f.server)) {
       if (f.server.native?.[f.tool] && !existing.native?.[f.tool]) existing.native = { ...existing.native, [f.tool]: f.server.native[f.tool] };
       addManaged(managed, f.name);
       report.adopted.push({ name: f.name, tool: f.tool });

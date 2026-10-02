@@ -33,6 +33,7 @@ import {
   type HistorySession,
   type HistorySessionMeta,
   type HistorySource,
+  type HistoryStats,
   type ToolId,
   type UsageIn,
 } from "@0bridge/core";
@@ -226,12 +227,24 @@ const when = (ms: number) => new Date(ms).toISOString().slice(0, 16).replace("T"
 const refOf = (s: HistorySessionMeta) => s.short || s.id;
 const filters = (opts: HistoryOptions): HistoryFilter => ({ repo: opts.repo, tool: opts.tool, since: opts.days ? Date.now() - Number(opts.days) * 86_400_000 : undefined });
 
+/**
+ * On Free, one line when older conversations are kept out of view: they're still there, and
+ * Plus shows them. Nothing when the days asked for are within the window anyway.
+ */
+function windowNote(server: string, stats: HistoryStats | null, opts: HistoryOptions): void {
+  const w = stats?.window;
+  if (!w?.older || (opts.days && Number(opts.days) <= w.days)) return;
+  const n = w.older.toLocaleString("en-US");
+  console.log(c.dim(`\n${n} ${w.older === 1 ? "conversation" : "conversations"} older than ${w.days} days ${w.older === 1 ? "is" : "are"} hidden on Free, not deleted. Plus shows all: ${server.replace(/\/+$/, "")}/app/settings/billing`));
+}
+
 async function search(ctx: Context, query: string, opts: HistoryOptions): Promise<void> {
-  const { client } = cloudClient(ctx);
-  const { mode } = await client.historyStats();
-  if (mode === "server") {
+  const { cfg, client } = cloudClient(ctx);
+  const stats = await client.historyStats({ repo: opts.repo, tool: opts.tool });
+  const note = () => windowNote(cfg.server, stats, opts);
+  if (stats.mode === "server") {
     const hits = await client.historySearch(query, { ...filters(opts), limit: 30 });
-    if (!hits.length) return console.log(c.dim(`Nothing matches "${query}".`));
+    if (!hits.length) return (console.log(c.dim(`Nothing matches "${query}".`)), note());
     let last = "";
     for (const h of hits) {
       if (h.session.id !== last) {
@@ -240,7 +253,7 @@ async function search(ctx: Context, query: string, opts: HistoryOptions): Promis
       }
       console.log(`  ${c.dim(`#${h.seq} ${h.role}`)} ${h.snippet.replace(/\s+/g, " ").replace(/«([^»]*)»/g, (_, w: string) => c.bold(w))}`);
     }
-    return;
+    return note();
   }
   // End-to-end: fetch the matching sessions' ciphertext and search it here.
   const key = localKey(ctx) ?? fail(`history is end-to-end encrypted: run ${c.cyan("0b vault unlock")} on this machine first`);
@@ -256,13 +269,14 @@ async function search(ctx: Context, query: string, opts: HistoryOptions): Promis
         const title = meta.title ? openText(key, meta.id, "title", meta.title) : "(untitled)";
         found++;
         console.log(`\n${c.bold(title)} ${c.dim(refOf(meta))} ${c.dim(`#${m.seq} ${m.role} · ${meta.repo ?? meta.cwd ?? "?"} · ${when(m.at)}`)}\n  ${text.replace(/\s+/g, " ").slice(0, 240)}`);
-        if (found >= 30) return;
+        if (found >= 30) return note();
       }
       if (page.messages.length < 500) break;
       from = page.messages.at(-1)!.seq + 1;
     }
   }
   if (!found) console.log(c.dim(`Nothing matches "${query}" in the ${list.length} most recent sessions.`));
+  note();
 }
 
 /** `ref`: a session id, or its short ref (`0b:k3f9x2`) where the server takes those. */
@@ -279,15 +293,16 @@ async function show(ctx: Context, ref: string, opts: { from?: string }): Promise
 
 /** The most recent sessions, each with the ref to continue it by. */
 async function list(ctx: Context, opts: HistoryOptions): Promise<void> {
-  const { client } = cloudClient(ctx);
-  const sessions = await client.historySessions({ ...filters(opts), limit: 30 });
-  if (!sessions.length) return console.log(c.dim("No sessions yet."));
+  const { cfg, client } = cloudClient(ctx);
+  const [sessions, stats] = await Promise.all([client.historySessions({ ...filters(opts), limit: 30 }), client.historyStats({ repo: opts.repo, tool: opts.tool }).catch(() => null)]);
+  if (!sessions.length) return (console.log(c.dim(stats?.window?.older ? `No sessions in the last ${stats.window.days} days.` : "No sessions yet.")), windowNote(cfg.server, stats, opts));
   const key = sessions.some((s) => s.enc) ? localKey(ctx) : null;
   for (const s of sessions) {
     const title = s.title && s.enc ? (key ? openText(key, s.id, "title", s.title) : "(encrypted)") : (s.title ?? "(untitled)");
     console.log(`${c.cyan(refOf(s).padEnd(10))} ${c.bold(title.replace(/\s+/g, " ").slice(0, 70))}\n${" ".repeat(11)}${c.dim(`${s.tool} · ${s.repo ?? s.cwd ?? "?"} · ${s.device ?? ""} · ${when(s.updatedAt)} · ${s.messages} messages`)}`);
   }
   console.log(c.dim(`\nContinue one anywhere: ${c.cyan("0b resume <ref>")}, or tell any connected AI "continue <ref>".`));
+  windowNote(cfg.server, stats, opts);
 }
 
 /** A visible warning when a chosen source can't be read on this machine (Cursor and Hermes need SQLite). */

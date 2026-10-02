@@ -284,3 +284,24 @@ test("explicit choices: one context7 everywhere, Linear moved off SSE, skills fi
   expect(existsSync(join(home, ".claude/skills/pdf"))).toBe(false);
   expect(existsSync(join(home, ".codex/skills/playwriter"))).toBe(true);
 });
+
+test("tool search is per tool: only Cursor's 0bridge entry gets ?tools=, and it stays in sync", () => {
+  const m = importAll();
+  const store = openSecretStore(ctx.storeDir);
+  m.mcpServers["0bridge"] = { transport: "http", url: "https://0bridge.dev/mcp", headers: { Authorization: "Bearer 0b_test" } };
+  m.tools.cursor = { enabled: true, toolSearch: "auto" };
+  executePlan(ctx, planApply(ctx, m, loadState(ctx), store));
+  expect(JSON.parse(read(".cursor/mcp.json")).mcpServers["0bridge"].url).toBe("https://0bridge.dev/mcp?tools=auto");
+  expect((parseToml(read(".codex/config.toml")) as any).mcp_servers["0bridge"].url).toBe("https://0bridge.dev/mcp");
+  expect(JSON.parse(read(".claude.json")).mcpServers["0bridge"].url).toBe("https://0bridge.dev/mcp");
+  // Cursor's other servers are as they were.
+  expect(JSON.parse(read(".cursor/mcp.json")).mcpServers.posthog.url).toBe("https://mcp.posthog.com/mcp");
+  expect(planApply(ctx, m, loadState(ctx), store).changes).toEqual([]);
+  expect(computeStatus(ctx, m, store).mcp.find((r) => r.name === "0bridge")!.cells.cursor).toBe("ok");
+  // Importing again adopts Cursor's copy rather than calling it a conflict.
+  expect(importFromTools(ctx, m, loadState(ctx), store).conflicts.filter((x) => x.name === "0bridge")).toEqual([]);
+  // Back to every tool.
+  delete m.tools.cursor.toolSearch;
+  executePlan(ctx, planApply(ctx, m, loadState(ctx), store));
+  expect(JSON.parse(read(".cursor/mcp.json")).mcpServers["0bridge"].url).toBe("https://0bridge.dev/mcp");
+});

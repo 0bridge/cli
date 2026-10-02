@@ -62,6 +62,7 @@ When the user asks to set up this machine or a repo ("sync the backend dev envir
 - \`0b cloud\` lists connections. \`0b rename linear --label <current> <new>\` changes a label (sign-in kept); \`0b disconnect linear --label <name>\` removes one. Leave out \`--label\` when the service has one account.
 - \`0b connection\` shows who each connection is signed in as and what it's for. The user decides what agents get: \`0b connect <service> --read-only\` (only tools that read), \`0b connection <service> read-only on|off\`, \`0b connection <service> tool off <tool>\`, \`0b connection <service> describe "work calendar"\` and \`tags work,acme\`. Change these only when the user asks.
 - New tools appear after the AI tool reloads its MCP servers; ask the user to restart the session if they don't.
+- Cursor slow or over its tool limit with many services connected: \`0b apply --only cursor --tool-search auto --yes\` gives it three search tools in their place above 80 tools (\`search\`: always, \`all\`: back to every tool). Claude Code and Codex search tools themselves: leave them as they are.
 
 ## Local MCP servers (run on this machine)
 

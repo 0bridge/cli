@@ -64,6 +64,7 @@ import { connectTeam, teamCommand } from "./team.ts";
 import { agentCommand } from "./agent/index.ts";
 import { sessionsCommand } from "./sessions.ts";
 import { webhookCommand } from "./webhook.ts";
+import { driveCommand } from "./drive.ts";
 import { usageCommand } from "./usage.ts";
 import { agentVmSetup } from "./agent-vm.ts";
 import { feedbackCommand } from "./feedback.ts";
@@ -169,8 +170,17 @@ ${c.bold("Usage")}
   0b sessions                  What your coding sessions are doing now, on every machine and in the cloud
         [--state needs-you]     (--machine m, --repo r); watch: refresh every 5 s
   0b sessions on|off           Post this machine's session states (Claude Code, Codex, Cursor) to your board
-  0b webhook add <name>        An address other services send events to (--preset channeltalk|github|generic);
-        [--route queue|agent|routine|notify] [--repo r] [--agent claude] [--routine-url u] [--notify]
+  0b drive ls [folder]          Your Drive (and your teams' with --workspace <team>): files, and a folder's README
+  0b drive clone <folder> [dir] A local folder that syncs both ways with a Drive folder ("" for all of it)
+  0b drive sync [dir] | status [dir] | unlink [dir]   Sync now, see what differs, stop syncing (files stay)
+  0b drive email <folder>       The folder's email address: mail from you or your team lands there
+  0b webhook add <name>         An address other services send events to (--preset channeltalk|github|generic);
+                                asks what each event does: run a command here, forward it, start an agent,
+                                notify you, or store it for agents (--route run|forward|agent|notify|store)
+  0b webhook run <name> [--debounce 30] [--timeout 300] [--machine <m>] -- <command…>
+                                Run a command on this machine for each event (event JSON on stdin); --off stops
+  0b webhook listen [on|off]    Keep this machine connected for webhook runs (installed by \`run\`)
+  0b webhook set <name> --route …   Change what a webhook does; forward-secret <name> makes a new signing secret
   0b webhook list | rm | test | rotate <name> | events [name] [--follow]
   0b usage [--days 30]         Tokens and estimated cost by tool, model, repo or day (--by)
   0b usage on|off|forget       Upload token counts (never conversation text), even with history off; forget deletes them
@@ -187,7 +197,7 @@ ${c.bold("Usage")}
   0b clip paste [dir]          Save what's waiting here (over SSH too) and print the paths
   0b clip shims [off]          On a Linux server: ⌃V in Claude Code pastes the image you last copied on your Mac,
                                received as you copy it (clip sync on|off does the same there)
-  0b background [on|off]       Run (or schedule every 15 min) the history, context and personal file sync
+  0b background [on|off]       Run (or schedule every 15 min) the history, context, personal file and Drive folder sync
   0b tool enable|disable <tool>
   0b update [--check]          Install the newest 0b (and restart its background jobs); --check only looks
   0b login [--web]             Sign in with a one-time code (works over SSH too); --web uses a browser redirect
@@ -528,7 +538,15 @@ function tool(args: string[]) {
 async function main() {
   // `0b exec -- cmd --any --flags`: everything after is the command's, not ours.
   if (process.argv[2] === "exec") return execCommand(ctx, process.argv.slice(3));
+  // `0b webhook run <name> -- python3 sync.py --flag`: what follows `--` is the command to run, never ours.
+  let args = process.argv.slice(2);
+  let command: string[] | undefined;
+  if ((args[0] === "webhook" || args[0] === "webhooks") && args.includes("--")) {
+    command = args.slice(args.indexOf("--") + 1);
+    args = args.slice(0, args.indexOf("--"));
+  }
   const { values, positionals } = parseArgs({
+    args,
     allowPositionals: true,
     options: {
       only: { type: "string" },
@@ -603,6 +621,9 @@ async function main() {
       shell: { type: "boolean" },
       dir: { type: "string" },
       workspace: { type: "string" },
+      debounce: { type: "string" },
+      timeout: { type: "string" },
+      off: { type: "boolean" },
     },
   });
   const [cmd, ...rest] = positionals;
@@ -730,7 +751,14 @@ async function main() {
         follow: values.follow,
         json: values.json,
         yes: values.yes,
+        url: values.url,
+        debounce: values.debounce,
+        timeout: values.timeout,
+        off: values.off,
+        command,
       });
+    case "drive":
+      return driveCommand(ctx, rest, { workspace: values.workspace, json: values.json, yes: values.yes, quiet: values.quiet, force: values.force });
     case "usage":
       return usageCommand(ctx, rest, { days: values.days, by: values.by, json: values.json, quiet: values.quiet });
     case "tool":

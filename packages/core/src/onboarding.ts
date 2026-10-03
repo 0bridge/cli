@@ -101,6 +101,15 @@ When the user asks to set up this machine or a repo ("sync the backend dev envir
 
 - You can't see the user's clipboard, especially over SSH. When they mention a screenshot, image or file they copied for you, call \`bridge__clipboard\`: it returns what they sent (images as images). If nothing was sent, it asks their Mac (when \`0b clip listen\` is on there), and they allow it in a dialog. Otherwise ask them to run \`0b clip\` on their Mac (or paste it on the dashboard's Clipboard page), then call it again.
 
+## Drive: files every AI app reads
+
+- The user's Drive, and their teams', holds files every AI app reaches through the \`bridge__drive_*\` tools, Claude and ChatGPT included. A folder with a README.md or AGENTS.md is a piece of work: list it first (\`bridge__drive_list\`), then follow its AGENTS.md and skills (\`bridge__skills\` with \`folder\`).
+- To work on a Drive folder on this machine: \`0b drive clone <folder> [dir]\` (\`--workspace <team>\` for a team's) makes a local folder that syncs both ways in the background, with the folder's skills in \`.claude/skills\` and its AGENTS.md as CLAUDE.md. Save results there; \`0b drive sync\` sends them now, \`0b drive status\` shows what differs. \`0b drive ls [folder]\` lists one; \`0b drive email <folder>\` prints the address mail to it goes to.
+- Changed on both sides: sync keeps this machine's file and saves Drive's next to it as \`<name>.0bridge-<who>-v<n>.<ext>\`. Merge the two, then delete the copy.
+- A change to AGENTS.md, CLAUDE.md, \`.claude/\` or \`.agents/skills/\` through the \`bridge__drive_*\` tools, or by a team member who isn't an admin, waits as a proposal for an owner or admin in the dashboard. Tell the user; don't look for a way around it.
+- In a folder synced on an owner's or admin's machine, your edits to those files go up as theirs on the next sync, with no proposal: change them only when the user asked you to, and tell them what you changed.
+- 0bridge's server reads Drive files (that's how chat apps search them): secrets go in the vault, never in Drive.
+
 ## APIs through 0bridge
 
 - Some connections are HTTP APIs rather than MCP servers (the Connections list says "API"). Google Calendar and Channel Talk have their own tools. An API connected from its OpenAPI document has \`<service>__search\` (find an operation by words), \`<service>__describe\` (its parameters and body), \`<service>__call\` (reads) and, once the user allows writes, \`<service>__call_write\`. Any other API has \`<service>__get\` (reads) and \`<service>__request\` (changes) with a path under its base URL. 0bridge adds the key; you never see it and don't need to.

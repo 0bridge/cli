@@ -14,7 +14,8 @@
     "./scope": "./src/scope.ts",
     "./agent-vm": "./src/agent-vm.ts",
     "./qr": "./src/qr.ts",
-    "./notes": "./src/notes.ts"
+    "./notes": "./src/notes.ts",
+    "./drive-paths": "./src/drive-paths.ts"
   },
   "dependencies": {
     "@0bridge/session": "workspace:*",

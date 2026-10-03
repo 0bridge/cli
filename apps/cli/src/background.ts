@@ -5,8 +5,8 @@ import { installService, serviceInstalled } from "./service.ts";
 import { c } from "./ui.ts";
 
 /**
- * One background job keeps this machine's conversation history, personal files and
- * context (profile, instructions, skills) in sync: `0b background` every 15 minutes, through the
+ * One background job keeps this machine's conversation history, personal files,
+ * context (profile, instructions, skills) and Drive folders cloned here (`0b drive clone`) in sync: `0b background` every 15 minutes, through the
  * OS's service manager (service.ts). The agents' turn-end hooks upload a conversation within
  * seconds; this catches whatever they miss, and the tools without hooks.
  */
@@ -44,7 +44,7 @@ export function upgradeBackground(ctx: Context): void {
   if (backgroundInstalled(ctx) && outdated(ctx)) installBackground(ctx, true, true);
 }
 
-/** What the job runs: history if it's on here, then the context, then every tracked personal file. */
+/** What the job runs: history if it's on here, then the context, then every tracked personal file, then every synced Drive folder. */
 export async function runBackground(ctx: Context, quiet: boolean): Promise<void> {
   const { syncHistory } = await import("./history.ts");
   const { syncAllFiles } = await import("./files.ts");
@@ -73,5 +73,11 @@ export async function runBackground(ctx: Context, quiet: boolean): Promise<void>
     await syncAllFiles(ctx, quiet);
   } catch (e) {
     console.error(`${stamp()} files: ${e instanceof Error ? e.message : e}`);
+  }
+  try {
+    const { syncAllDriveFolders } = await import("./drive-sync.ts");
+    await syncAllDriveFolders(ctx, quiet);
+  } catch (e) {
+    console.error(`${stamp()} drive: ${e instanceof Error ? e.message : e}`);
   }
 }

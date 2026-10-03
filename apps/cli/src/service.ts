@@ -15,8 +15,8 @@ import { c } from "./ui.ts";
  * manager: the files are written and nothing is loaded, enabled or scheduled.
  */
 
-export type ServiceName = "background" | "clip" | "clipsync" | "agent";
-export const SERVICE_NAMES: ServiceName[] = ["background", "clip", "clipsync", "agent"];
+export type ServiceName = "background" | "clip" | "clipsync" | "agent" | "webhook";
+export const SERVICE_NAMES: ServiceName[] = ["background", "clip", "clipsync", "agent", "webhook"];
 export interface ServiceOptions {
   /** Run every this many seconds. */
   interval?: number;
@@ -30,6 +30,7 @@ const DESCRIPTION: Record<ServiceName, string> = {
   clip: "clipboard answers (0b clip listen)",
   clipsync: "clipboard sync (0b clip sync)",
   agent: "coding agents for your AI apps (0b agent)",
+  webhook: "webhook runs (0b webhook listen)",
 };
 
 const isReal = (ctx: Context) => ctx.home === homedir();
@@ -281,7 +282,7 @@ export function restartServices(ctx: Context): string[] {
   const restarted: string[] = [];
   if (!isReal(ctx)) return restarted;
   ensureBin(ctx);
-  for (const name of ["clip", "clipsync", "agent"] as const) {
+  for (const name of ["clip", "clipsync", "agent", "webhook"] as const) {
     if (!serviceInstalled(ctx, name)) continue;
     let ok = false;
     if (process.platform === "darwin" && typeof process.getuid === "function") ok = spawnSync("launchctl", ["kickstart", "-k", `gui/${process.getuid()}/${label(name)}`], { stdio: "ignore" }).status === 0;

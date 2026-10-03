@@ -339,6 +339,18 @@ export class CloudClient {
     return this.req<T>(path, { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }, allow);
   }
 
+  /**
+   * Any /api route (`path` without the /api prefix) as the bare Response: file bytes up or down,
+   * redirects followed. Same token and network retries as `call`; nothing parsed, no status thrown.
+   */
+  raw(method: string, path: string, body?: BodyInit | null, headers: Record<string, string> = {}): Promise<Response> {
+    return retrying(
+      () => fetch(`${this.server}/api${path}`, { method, body: body ?? null, headers: { Authorization: `Bearer ${this.token}`, ...headers } }),
+      method === "GET",
+      this.server,
+    );
+  }
+
   me() {
     return this.req<{ userId: string; login: string; email?: string | null; tokenId: string | null; mcpUrl: string }>("/me");
   }

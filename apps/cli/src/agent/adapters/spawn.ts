@@ -105,9 +105,22 @@ export function onLines(stream: NodeJS.ReadableStream | null | undefined, fn: (l
  * .cmd shim runs the agent as cmd.exe's child, which outlives cmd.exe (keeping its pipes open)
  * when only cmd.exe is ended: there the whole tree goes at once.
  */
-export function kill(child: ChildProcess, ms = 5000): void {
+export function kill(child: ChildProcess, ms = 5000, o: { group?: boolean } = {}): void {
   if (child.exitCode !== null || child.signalCode !== null) return;
   if (process.platform === "win32" && child.pid && spawnSync("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true }).status === 0) return;
+  // `group`: the child was spawned detached (its own process group), and what it started goes too,
+  // SIGKILL included, even when the child itself has exited by then.
+  if (o.group && child.pid && process.platform !== "win32") {
+    const pid = child.pid;
+    const signal = (s: NodeJS.Signals) => {
+      try {
+        process.kill(-pid, s);
+      } catch {}
+    };
+    signal("SIGTERM");
+    setTimeout(() => signal("SIGKILL"), ms).unref?.();
+    return;
+  }
   child.kill("SIGTERM");
   const t = setTimeout(() => child.exitCode === null && child.signalCode === null && child.kill("SIGKILL"), ms);
   t.unref?.();

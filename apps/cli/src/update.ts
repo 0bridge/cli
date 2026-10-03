@@ -32,7 +32,7 @@ export function installer(scriptPath: string, version = "latest"): string[] {
 }
 
 /** What the restarted jobs are called here. The periodic sync isn't one: it starts fresh each time. */
-const RUNNING: Record<string, string> = { clip: "clip listen", clipsync: "clip sync", agent: "the agent daemon" };
+const RUNNING: Record<string, string> = { clip: "clip listen", clipsync: "clip sync", agent: "the agent daemon", webhook: "webhook listen" };
 
 /**
  * `0b update`: install the newest 0b from npm with the package manager that installed this one,

@@ -14,8 +14,10 @@ switch tools without starting over. Which AI products work, and how well, is dat
 
 Also: one board of what every coding session is doing (`0b sessions`, which one needs you), one command
 that sets up your dev environment on an AI agent's own computer (`0b setup --agent-vm`; Muse and Manus
-are untested, Instinct is not supported), webhooks that wake an agent instead of a polling timer
-(`0b webhook`), and token counts with an estimated cost (`0b usage`). Details and limits:
+are untested, Instinct is not supported), Drive folders of files and instructions every AI app works
+in, synced to a folder on your computer (`0b drive`), webhooks that run a command on your machine,
+forward to your server or wake an agent instead of a polling timer (`0b webhook`), and token counts
+with an estimated cost (`0b usage`). Details and limits:
 [docs](https://0bridge.dev/docs).
 
 > Status: early development. The gateway runs at https://0bridge.dev.

@@ -224,7 +224,8 @@ export function setupSteps(preset: Endpoint["preset"], url: string, name: string
   if (preset === "channeltalk")
     return [
       "In Channel Talk: Desk → Settings → Webhook → add one.",
-      `Paste the URL above (it carries its token: ?token=…), and pick message.created.userChat.`,
+      `Paste ${url.split("?")[0]} and pick message.created.userChat. Save.`,
+      `Channel Talk adds a token of its own to the address (?token=…). Copy the token it shows for the webhook, then: 0b webhook token ${name}`,
       "Channel Talk blocks a webhook after 100 failed deliveries in a row; 0bridge answers every stored event at once.",
     ];
   if (preset === "github")
@@ -513,6 +514,22 @@ export async function webhookCommand(ctx: Context, args: string[], opts: Webhook
       return;
     }
 
+    case "token": {
+      // The sender's own token (Channel Talk makes one per webhook): typed hidden, or one line on stdin.
+      const e = await find(client, name, "0b webhook token <name>");
+      let secret: string;
+      if (process.stdin.isTTY) {
+        const v = await p.password({ message: `The token ${TITLE[e.preset] ?? "the sender"} shows for this webhook`, mask: "•", validate: (x) => (x?.trim() ? undefined : "required") });
+        if (p.isCancel(v)) process.exit(0);
+        secret = String(v).trim();
+      } else secret = readFileSync(0, "utf8").trim();
+      const r = await client.call<{ url: string }>("POST", `/triggers/${encodeURIComponent(e.id)}/secret`, { secret });
+      if (opts.json) return console.log(JSON.stringify(r, null, 2));
+      console.log(`${c.green("✓")} ${e.name} now checks deliveries against ${TITLE[e.preset] ?? "the sender"}'s token; 0bridge's own stopped working.`);
+      console.log(c.dim(`  Address: ${r.url} (the sender adds ?token=… itself). Try it by sending a real message, then: 0b webhook events ${e.name}`));
+      return;
+    }
+
     case "rotate": {
       const e = await find(client, name, "0b webhook rotate <name>");
       const r = await client.call<{ secret: string; url: string }>("POST", `/triggers/${encodeURIComponent(e.id)}/rotate`, {});
@@ -567,6 +584,6 @@ export async function webhookCommand(ctx: Context, args: string[], opts: Webhook
     }
 
     default:
-      throw new Error(`unknown subcommand "${sub}". 0b webhook add | run | listen | set | forward-secret | list | rm | test | rotate | events`);
+      throw new Error(`unknown subcommand "${sub}". 0b webhook add | run | listen | set | token | forward-secret | list | rm | test | rotate | events`);
   }
 }

@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
-import { join, resolve, sep } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import {
   CloudError,
   HISTORY_SOURCES,
@@ -27,6 +27,7 @@ import {
   usageWanted,
   writeAtomic,
   type CloudClient,
+  isInside,
   type Context,
   type HistoryConfig,
   type HistoryFilter,
@@ -39,6 +40,7 @@ import {
 } from "@0bridge/core";
 import { BACKGROUND_INTERVAL, backgroundInstalled, ensureBackground, installBackground } from "./background.ts";
 import { cloudClient } from "./cloud.ts";
+import { loadDriveState } from "./drive-sync.ts";
 import { pendingMarks, takeMarks, workerLockPath } from "./hook.ts";
 import { binPath, ensureBin } from "./service.ts";
 import { localKey, vaultValues } from "./vault.ts";
@@ -170,6 +172,25 @@ export async function uploadUsage(client: CloudClient, rows: UsageIn[]): Promise
   return sent;
 }
 
+/**
+ * Each session with the Drive folder its directory syncs with (`0b drive clone`, the innermost one),
+ * when that folder syncs with this account: the server files the session under the work folder
+ * there (one with README.md or AGENTS.md), so the next app finds it with the folder.
+ */
+export function withDriveFolders(ctx: Context, account: { server: string; userId: string }, sessions: HistorySession[]): HistorySession[] {
+  const folders = Object.entries(loadDriveState(ctx).folders).filter(([, f]) => f.userId === account.userId && f.server === account.server);
+  if (!folders.length) return sessions;
+  return sessions.map((s) => {
+    if (!s.cwd) return s;
+    const cwd = resolve(s.cwd);
+    let best: [string, (typeof folders)[number][1]] | null = null;
+    for (const [root, f] of folders) if (isInside(root, cwd) && (!best || root.length > best[0].length)) best = [root, f];
+    if (!best) return s;
+    const rel = relative(best[0], cwd).split(sep).join("/");
+    return { ...s, drive: { workspace: best[1].workspaceId, path: `${best[1].prefix}${rel}`.replace(/\/+$/, "") } };
+  });
+}
+
 async function upload(ctx: Context, opts: HistoryOptions): Promise<void> {
   let cfg = loadHistoryConfig(ctx);
   if (!syncWanted(cfg) && !opts.dryRun) fail(`history sync is off on this machine. Turn it on with ${c.cyan("0b history on")}`);
@@ -182,7 +203,7 @@ async function upload(ctx: Context, opts: HistoryOptions): Promise<void> {
   const sources = sourcesOf(ctx, opts.only);
   if (sources) cfg = { ...cfg, tools: cfg.tools.filter((t) => sources.includes(t)) };
   if (!cfg.tools.length) return;
-  const { client } = cloudClient(ctx);
+  const { client, cfg: account } = cloudClient(ctx);
   const { mode } = countsOnly ? { mode: "server" } : await client.historyStats();
   const key = mode === "e2e" ? (localKey(ctx) ?? fail(`history is end-to-end encrypted and this machine doesn't have the vault key: run ${c.cyan("0b vault unlock")}`)) : null;
   const values = vaultValues(ctx);
@@ -196,7 +217,7 @@ async function upload(ctx: Context, opts: HistoryOptions): Promise<void> {
     // Done when no log moved on: nothing left, or only lines still being written.
     if (!Object.entries(got.cursors).some(([k, v]) => cfg.files[k]?.offset !== v.offset || cfg.files[k]?.seq !== v.seq || !(k in cfg.files))) break;
     if (!opts.dryRun)
-      for (const batch of batchSessions(got.sessions)) {
+      for (const batch of batchSessions(withDriveFolders(ctx, account, got.sessions))) {
         const r = await client.uploadHistory(batch.map((s) => (key ? seal(key, s) : { ...s, enc: false })));
         messages += r.messages;
       }

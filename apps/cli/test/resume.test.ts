@@ -45,6 +45,14 @@ describe("the handoff prompt", () => {
     expect(text).toContain("`0b history show claude-code:11111111-2222-3333-4444-555555555555`, or bridge__history_get session=0b:k3f9x2.");
   });
 
+  test("a session filed under a work folder points at its README, which may be newer than the summary", () => {
+    const text = renderPrompt(handoff({ folder: { workspace: "ws_me", path: "companies/acme/quote", version: 3 } }));
+    expect(text).toContain("Work folder: companies/acme/quote/ in 0bridge Drive (its README was v3 when this was saved)");
+    expect(text).toContain("bridge__resume session=0b:k3f9x2");
+    expect(text.indexOf("Work folder:")).toBeLessThan(text.indexOf("Check the current state"));
+    expect(renderPrompt(handoff())).not.toContain("Work folder:");
+  });
+
   test("leaves out what the session doesn't have", () => {
     const text = renderPrompt(handoff({ summary: null, open: null, goal: null, recent: [], repo: null, branch: "main", title: null }));
     expect(text).not.toContain("Summary:");

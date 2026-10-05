@@ -11,7 +11,7 @@
     },
     "apps/cli": {
       "name": "0bridge",
-      "version": "0.2.24",
+      "version": "0.2.25",
       "bin": {
         "0b": "dist/0b.js",
         "0bridge": "dist/0b.js",

@@ -181,6 +181,7 @@ ${c.bold("Usage")}
                                 Run a command on this machine for each event (event JSON on stdin); --off stops
   0b webhook listen [on|off]    Keep this machine connected for webhook runs (installed by \`run\`)
   0b webhook set <name> --route …   Change what a webhook does; forward-secret <name> makes a new signing secret
+  0b webhook token <name>       Use the token the sender made (Channel Talk adds its own ?token= to the address)
   0b webhook list | rm | test | rotate <name> | events [name] [--follow]
   0b usage [--days 30]         Tokens and estimated cost by tool, model, repo or day (--by)
   0b usage on|off|forget       Upload token counts (never conversation text), even with history off; forget deletes them

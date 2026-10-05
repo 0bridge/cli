@@ -43,6 +43,8 @@ export interface Handoff {
   goal: string | null;
   recent: Turn[];
   native: { tool: "claude" | "codex" | "cursor" | "gemini" | "grok"; id: string; command: string } | null;
+  /** The Drive work folder it's filed under (gateways from before work folders leave it out). */
+  folder?: { workspace: string; path: string; version: number | null } | null;
 }
 
 /** The agents `0b resume` can start, by `--tool` name. */
@@ -118,6 +120,11 @@ export function renderPrompt(h: Handoff): string {
   if (h.open) parts.push(`Open items:\n${h.open}`);
   if (h.goal) parts.push(`Goal (the first ask):\n${h.goal}`);
   if (h.recent.length) parts.push(`Recent turns (${h.recent.length} of ${h.messages}):\n${h.recent.map((m) => `#${m.seq} ${m.role}: ${m.text}`).join("\n\n")}`);
+  // The folder's README may be newer than this summary: the agent reads it through 0bridge.
+  if (h.folder)
+    parts.push(
+      `Work folder: ${h.folder.path}/ in 0bridge Drive${h.folder.version ? ` (its README was v${h.folder.version} when this was saved)` : ""}. Its README.md is the current state and may be newer than the summary above: read it first with bridge__resume session=${h.ref}, or bridge__drive_list prefix=${h.folder.path}/ (pass workspace for a team's Drive).`,
+    );
   parts.push(
     `Check the current state of the repo before acting; don't redo finished work. Full transcript: \`0b history show ${h.id}\`, or bridge__history_get session=${h.ref}.`,
   );

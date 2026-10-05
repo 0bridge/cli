@@ -66,6 +66,8 @@ export interface HistorySession {
   model?: string;
   /** Which of the person's accounts of that tool (a second Claude config dir, CODEX_HOME); unset for the default one. */
   account?: string;
+  /** The Drive folder its directory syncs with (`0b drive clone`), so the server files it under that work folder. */
+  drive?: { workspace: string; path: string };
   startedAt: number;
   updatedAt: number;
   messages: HistoryMessage[];

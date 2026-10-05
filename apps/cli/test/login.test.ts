@@ -105,7 +105,7 @@ describe("0b login on a machine with no browser", () => {
     const qr = join(home, "qr.png");
     const p = Bun.spawn([process.execPath, CLI, "login", "--server", base, "--email", "Me@Example.com", "--qr", qr], {
       // Piped like an agent's shell; no browser to open, no colors asked for or against.
-      env: plainEnv({ ZEROBRIDGE_USER_HOME: home, ZEROBRIDGE_DIR: join(home, ".0bridge"), ZEROBRIDGE_SECRET_STORE: "file", BROWSER: "", DISPLAY: "", WAYLAND_DISPLAY: "" }),
+      env: plainEnv({ ZEROBRIDGE_USER_HOME: home, ZEROBRIDGE_DIR: join(home, ".0bridge"), ZEROBRIDGE_SECRET_STORE: "file", BROWSER: "none", DISPLAY: "", WAYLAND_DISPLAY: "" }),
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
@@ -153,7 +153,7 @@ describe("0b login on a machine with no browser", () => {
   test("ZEROB_EMAIL names the account when --email doesn't", async () => {
     const { home } = tempHome();
     const p = Bun.spawn([process.execPath, CLI, "login", "--server", base], {
-      env: { ...(process.env as Record<string, string>), ZEROBRIDGE_USER_HOME: home, ZEROBRIDGE_DIR: join(home, ".0bridge"), ZEROBRIDGE_SECRET_STORE: "file", BROWSER: "", DISPLAY: "", WAYLAND_DISPLAY: "", ZEROB_EMAIL: "env@example.com" },
+      env: { ...(process.env as Record<string, string>), ZEROBRIDGE_USER_HOME: home, ZEROBRIDGE_DIR: join(home, ".0bridge"), ZEROBRIDGE_SECRET_STORE: "file", BROWSER: "none", DISPLAY: "", WAYLAND_DISPLAY: "", ZEROB_EMAIL: "env@example.com" },
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",

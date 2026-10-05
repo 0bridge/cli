@@ -93,8 +93,9 @@ export function refreshBridgeSkills(ctx: Context): number {
   return changed;
 }
 
-/** Open a URL in the user's browser. `$BROWSER` overrides (also used by tests). */
+/** Open a URL in the user's browser. `$BROWSER` overrides (also used by tests); BROWSER=none opens nothing. */
 export function openBrowser(url: string): void {
+  if (process.env.BROWSER === "none") return;
   const [cmd, args] = process.env.BROWSER
     ? [process.env.BROWSER, [url]]
     : process.platform === "darwin"

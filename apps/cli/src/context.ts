@@ -201,7 +201,15 @@ async function run(ctx: Context, client: CloudClient, userId: string, plan: Cont
   const push = async (it: Item, base: string | null | undefined) => {
     if (it.kind === "skill") {
       const s = readSkill(join(p.skills, it.name), it.name)!;
-      const r = await client.call<ContextSkillMeta | { error: string; current: ContextSkillMeta | null }>("PUT", `/context/skills/${encodeURIComponent(it.name)}`, { body: s.body, files: s.files, ...(base === undefined ? {} : { base }) }, [409]);
+      let r: ContextSkillMeta | { error: string; current: ContextSkillMeta | null };
+      try {
+        r = await client.call("PUT", `/context/skills/${encodeURIComponent(it.name)}`, { body: s.body, files: s.files, ...(base === undefined ? {} : { base }) }, [409]);
+      } catch (e) {
+        // One skill 0bridge won't keep (too many files, too big) stays here; the others still go.
+        if (!(e instanceof CloudError && e.status === 400)) throw e;
+        res.notes.push(`${it.label} stays on this machine: ${e.message}`);
+        return;
+      }
       if ("error" in r) return conflict(it);
       remember(it, r.hash);
       res.pushed.push(it.label);

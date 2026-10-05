@@ -51,10 +51,11 @@ export const p = {
   note: (message?: string, title?: string, o?: NoteOptions) => clack.note(message, title, plain(o)),
 };
 
-/** Browsers can't be opened over SSH or without a display; print the link instead. */
+/** Browsers can't be opened over SSH, without a display or with BROWSER=none; print the link instead. */
 export const canOpenBrowser = () =>
-  Boolean(process.env.BROWSER) ||
-  (!process.env.SSH_CONNECTION && !process.env.SSH_TTY && (process.platform !== "linux" || Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY)));
+  process.env.BROWSER !== "none" &&
+  (Boolean(process.env.BROWSER) ||
+    (!process.env.SSH_CONNECTION && !process.env.SSH_TTY && (process.platform !== "linux" || Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY))));
 
 export const c = {
   bold: style("bold"),

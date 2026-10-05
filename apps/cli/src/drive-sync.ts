@@ -843,19 +843,20 @@ async function runSync(api: DriveApi, dir: string, st: FolderState, r: SyncRepor
   const fresh = [...local.keys()].filter((p) => !st.files[p]);
   const gitSkips = inGitRepo(dir) ? gitIgnored(dir, fresh) : new Set<string>();
   let readOnly = false;
-  for (const [path, f] of local) {
+  // Each file is its own request (about a second on the server), so a few go up at once.
+  const pushOne = async ([path, f]: [string, LocalFile & { sha256: string }]) => {
     const known = st.files[path];
     if (known && known.sha256 === f.sha256) {
       known.size = f.size;
       known.mtimeMs = f.mtimeMs;
-      continue;
+      return;
     }
-    if ((!known && gitSkips.has(path)) || readOnly) continue;
+    if ((!known && gitSkips.has(path)) || readOnly) return;
     // A name Drive refuses (a trailing dot, a `:`, a device name): it stays this machine's own.
     const why = unsafePath(dir, path);
     if (why) {
       r.stays.push({ path, why });
-      continue;
+      return;
     }
     try {
       const bytes = readFileSync(abs(dir, path));
@@ -876,9 +877,11 @@ async function runSync(api: DriveApi, dir: string, st: FolderState, r: SyncRepor
           break;
         }
         if (out.code !== "CONFLICT") {
-          r.errors.push(`${path}: ${out.error}`);
-          // A lapsed team takes no files at all: one line, not one per file.
-          if (out.code === "READ_ONLY") readOnly = true;
+          // A lapsed team takes no files at all: one line, not one per file (others may have been on their way up).
+          if (out.code === "READ_ONLY") {
+            if (!readOnly) r.errors.push(`${path}: ${out.error}`);
+            readOnly = true;
+          } else r.errors.push(`${path}: ${out.error}`);
           break;
         }
         // Changed there since our base: keep theirs next to ours, then go on top of it.
@@ -896,7 +899,11 @@ async function runSync(api: DriveApi, dir: string, st: FolderState, r: SyncRepor
     } catch (e) {
       r.errors.push(`${path}: ${e instanceof Error ? e.message : String(e)}`);
     }
-  }
+  };
+  await inParallel([...local], PUSH_AT_ONCE, pushOne);
+  // Reported in the folder's order, whichever finished first.
+  const order = new Map([...local.keys()].map((p, i) => [p, i]));
+  r.pushed.sort((a, b) => order.get(a)! - order.get(b)!);
 
   // Deleted here: deleted there (unless it's still here but ignored now: then it just stops syncing).
   for (const [path, known] of Object.entries(st.files)) {
@@ -922,6 +929,18 @@ async function runSync(api: DriveApi, dir: string, st: FolderState, r: SyncRepor
   }
 
   r.links = linkSkills(dir, st);
+}
+
+/** Files uploaded at once by a sync. */
+export const PUSH_AT_ONCE = 6;
+
+/** `fn` over `items`, at most `limit` at a time. */
+export async function inParallel<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) await fn(items[next++]!);
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
 }
 
 // ── Reports ──

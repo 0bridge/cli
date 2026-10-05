@@ -234,7 +234,7 @@ export interface CloudConnectionTool {
 export type Candidate =
   | { kind: "preset"; service: string; title: string; auth: string; keys?: string[] }
   | { kind: "mcp"; service: string; title: string; url: string; source: "0bridge" | "registry" | "probe"; official?: boolean; description?: string }
-  | { kind: "openapi"; service: string; title: string; specUrl: string; source: "url" | "probe" | "apis.guru"; description?: string };
+  | { kind: "openapi"; service: string; title: string; specUrl: string; source: "url"; description?: string };
 export interface Discovery {
   query: string;
   service: string;

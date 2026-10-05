@@ -677,10 +677,7 @@ async function chooseWay(ctx: Context, service: string): Promise<Way> {
   // Other people's MCP servers only when the service has no way in of its own (they'd see the data).
   const theirs = (x: (typeof d.candidates)[number]) => x.kind === "mcp" && x.official === false;
   const own = d.candidates.some((x) => !theirs(x));
-  // With a connector 0bridge made for it, API documents from APIs.guru only add noise.
-  const polished = d.candidates.some((x) => x.kind === "preset");
   for (const x of d.candidates) {
-    if (polished && x.kind === "openapi" && x.source === "apis.guru") continue;
     if (x.kind === "mcp") {
       if (theirs(x) && own) continue;
       const direct = DIRECT_ONLY[name];

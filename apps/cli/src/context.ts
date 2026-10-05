@@ -26,7 +26,7 @@ import {
 } from "@0bridge/core";
 import { cloudClient } from "./cloud.ts";
 import { reportTeams, syncTeams, teamSkillNames } from "./team.ts";
-import { c, tilde } from "./ui.ts";
+import { c, p as prompt, tilde } from "./ui.ts";
 
 /**
  * `0b context` and `0b memory`: your profile, global instructions and skills on 0bridge, so
@@ -60,6 +60,29 @@ const statePath = (ctx: Context) => join(ctx.storeDir, "context.json");
 const loadStates = (ctx: Context) => readJson<Record<string, SyncState>>(statePath(ctx)) ?? {};
 const saveState = (ctx: Context, userId: string, s: SyncState) => writeAtomic(statePath(ctx), JSON.stringify({ ...loadStates(ctx), [userId]: s }, null, 1) + "\n", { mode: 0o600 });
 
+/**
+ * Which skills found only on this machine may go up to 0bridge. A skill a tool brought along
+ * (Codex's sora, pdf …) reaches every machine and chat app once uploaded, so one that was never on
+ * 0bridge stays here until the user says: `share` (0b skill share, 0b skill add, or yes to the
+ * question an interactive push asks) or `local` (0b skill local: stay here, don't ask again).
+ * Skills already on 0bridge keep syncing as before.
+ */
+interface Sharing {
+  share: string[];
+  local: string[];
+}
+const sharingPath = (ctx: Context) => join(ctx.storeDir, "skill-sharing.json");
+const loadSharing = (ctx: Context): Sharing => ({ share: [], local: [], ...readJson<Partial<Sharing>>(sharingPath(ctx)) });
+
+/** Record the user's call on these skills; the other list forgets them. */
+export function markSkills(ctx: Context, names: string[], how: "share" | "local"): void {
+  const s = loadSharing(ctx);
+  const other = how === "share" ? "local" : "share";
+  s[other] = s[other].filter((n) => !names.includes(n));
+  s[how] = [...new Set([...s[how], ...names])].sort();
+  writeAtomic(sharingPath(ctx), JSON.stringify(s, null, 1) + "\n");
+}
+
 const PROFILE_MAX = 4000;
 const PROFILE_TEMPLATE = `# About me
 
@@ -81,6 +104,8 @@ interface Item {
   remote: string | null;
   base: string | null;
   action: SyncAction;
+  /** A skill never on 0bridge that isn't uploaded: the user hasn't been asked yet, or keeps it here. */
+  held?: "ask" | "local";
 }
 
 interface Report {
@@ -126,12 +151,17 @@ export async function planContext(ctx: Context, client: CloudClient, userId: str
   const names = new Set([...listSkills(p.skills), ...remoteSkills.keys(), ...Object.keys(state.skills)]);
   // A team's skills are its admins' (team.ts): copied here, never sent back as yours.
   const team = teamSkillNames(ctx);
+  const sharing = loadSharing(ctx);
   for (const name of [...names].sort()) {
     if (BUILTIN_SKILLS.has(name) || team.has(name)) continue;
     const local = readSkill(join(p.skills, name), name)?.hash ?? null;
     const r = remoteSkills.get(name)?.hash ?? null;
     const base = state.skills[name] ?? null;
-    items.push({ kind: "skill", name, label: `skill ${name}`, local, remote: r, base, action: planSync(local, r, base) });
+    let action = planSync(local, r, base);
+    // Never on 0bridge: it goes up only once the user said so.
+    const held = action === "push" && r === null && base === null && !sharing.share.includes(name) ? (sharing.local.includes(name) ? "local" : "ask") : undefined;
+    if (held) action = "none";
+    items.push({ kind: "skill", name, label: `skill ${name}`, local, remote: r, base, action, ...(held ? { held } : {}) });
   }
   return { items, remote, state };
 }
@@ -267,6 +297,8 @@ async function run(ctx: Context, client: CloudClient, userId: string, plan: Cont
     // Both changed: keep this machine's, put 0bridge's next to it.
     await conflict(it);
   }
+  const asked = plan.items.filter((it) => it.held === "ask").map((it) => it.name);
+  if (asked.length) res.notes.push(`${asked.join(", ")}: new here, not uploaded. ${c.cyan("0b skill share <name>")} sends one to 0bridge (your other machines and chat apps), ${c.cyan("0b skill local <name>")} keeps it here without asking again`);
   if (manifestChanged && m) saveManifest(ctx, m);
   saveState(ctx, userId, { ...state, lastSync: Date.now() });
   return res;
@@ -302,7 +334,7 @@ async function status(ctx: Context, client: CloudClient, userId: string): Promis
     return;
   }
   for (const it of shown) {
-    const where = it.local === null ? c.yellow("only on 0bridge — `0b context pull`") : it.remote === null && it.action === "push" ? c.yellow("only here — `0b context push`") : it.action === "same" ? c.green("synced") : c.yellow(STATE_LABEL[it.action]);
+    const where = it.held === "ask" ? c.yellow("new here, not uploaded — `0b skill share` or `0b skill local`") : it.held === "local" ? c.dim("kept on this machine") : it.local === null ? c.yellow("only on 0bridge — `0b context pull`") : it.remote === null && it.action === "push" ? c.yellow("only here — `0b context push`") : it.action === "same" ? c.green("synced") : c.yellow(STATE_LABEL[it.action]);
     console.log(`  ${it.label.padEnd(36)} ${where}`);
   }
   const n = plan.remote.memory.count;
@@ -367,6 +399,7 @@ export async function contextCommand(ctx: Context, args: string[], opts: Context
       // The teams' first, so a team skill that just arrived isn't taken for one of yours.
       const team = sub === "push" ? null : await syncTeams(ctx, client, cfg.userId);
       const plan = await planContext(ctx, client, cfg.userId);
+      if (sub !== "pull") await askToShare(ctx, plan, opts);
       if (team && reportTeams(team, { quiet: opts.quiet })) console.log(c.dim(`Your team's skills and instructions are in your AI tools now; run ${c.cyan("0b apply")} if one doesn't have them yet.`));
       report(await run(ctx, client, cfg.userId, plan, sub, opts.force), { quiet: opts.quiet, mode: sub });
       return;
@@ -379,6 +412,54 @@ export async function contextCommand(ctx: Context, args: string[], opts: Context
     default:
       fail(`unknown subcommand "context ${sub}". Try: 0b context status | push | pull | sync | profile | rm <skill>`);
   }
+}
+
+/** In a terminal, ask once about skills never on 0bridge: the picked ones go up, the rest stay here for good. */
+async function askToShare(ctx: Context, plan: ContextPlan, opts: ContextOptions): Promise<void> {
+  const asked = plan.items.filter((it) => it.held === "ask");
+  if (!asked.length || opts.quiet || opts.yes || !process.stdin.isTTY || !process.stdout.isTTY) return;
+  const picked = await prompt.multiselect({
+    message: `Upload these skills to 0bridge? ${c.dim("— your other machines and chat apps get them; the rest stay on this machine")}`,
+    options: asked.map((it) => ({ value: it.name, label: it.name })),
+    required: false,
+  });
+  if (prompt.isCancel(picked)) return;
+  markSkills(ctx, picked, "share");
+  markSkills(ctx, asked.map((it) => it.name).filter((n) => !picked.includes(n)), "local");
+  for (const it of asked) {
+    if (picked.includes(it.name)) (delete it.held, (it.action = "push"));
+    else it.held = "local";
+  }
+}
+
+/** The skills on this machine never uploaded that the user hasn't decided on (0b status asks about them). */
+export async function skillsToAsk(ctx: Context): Promise<string[]> {
+  const { cfg, client } = cloudClient(ctx);
+  return (await planContext(ctx, client, cfg.userId)).items.filter((it) => it.held === "ask").map((it) => it.name);
+}
+
+/** `0b skill share|local <name>…`: the user's call on skills never uploaded; share sends them now when signed in. */
+export async function shareSkillsCommand(ctx: Context, names: string[], how: "share" | "local"): Promise<void> {
+  if (!names.length) fail(`usage: 0b skill ${how} <name>…`);
+  const here = new Set(listSkills(contextPaths(ctx).skills));
+  const missing = names.filter((n) => !here.has(n));
+  if (missing.length) fail(`no skill ${missing.join(", ")} in ~/.0bridge/skills (0b skill list)`);
+  markSkills(ctx, names, how);
+  if (how === "local") {
+    const up = names.filter((n) => Object.values(loadStates(ctx)).some((s) => s.skills[n]));
+    console.log(`${c.green("✓")} ${names.join(", ")} stay${names.length === 1 ? "s" : ""} on this machine.`);
+    if (up.length) console.log(c.yellow(`  ${up.join(", ")} ${up.length === 1 ? "is" : "are"} on 0bridge already: ${c.cyan("0b context rm <name>")} takes one off (and off your other machines)`));
+    return;
+  }
+  let account;
+  try {
+    account = cloudClient(ctx);
+  } catch {
+    console.log(`${c.green("✓")} ${names.join(", ")} will go up to 0bridge once you sign in (${c.cyan("0b login")}).`);
+    return;
+  }
+  const plan = await planContext(ctx, account.client, account.cfg.userId);
+  report(await run(ctx, account.client, account.cfg.userId, plan, "push"), { mode: "push" });
 }
 
 const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);

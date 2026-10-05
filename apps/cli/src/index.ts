@@ -59,7 +59,7 @@ import { clipCommand } from "./clip.ts";
 import { updateCommand } from "./update.ts";
 import { resumeCommand } from "./resume.ts";
 import { hookCommand } from "./hook.ts";
-import { contextCommand, memoryCommand } from "./context.ts";
+import { contextCommand, markSkills, memoryCommand, shareSkillsCommand } from "./context.ts";
 import { connectTeam, teamCommand } from "./team.ts";
 import { agentCommand } from "./agent/index.ts";
 import { sessionsCommand } from "./sessions.ts";
@@ -100,6 +100,8 @@ ${c.bold("Usage")}
   0b skill add <folder>         Add a skill folder (SKILL.md with a name and description) to your synced
         [--only t,...] [--force]  skills; 0b apply puts it in every tool. --force replaces one of that name
   0b skill list | enable|disable|remove <name>
+  0b skill share|local <name>…  A skill never on 0bridge stays on this machine until you choose: share
+                                uploads it (other machines, chat apps), local keeps it here, unasked
   --project                    With mcp and skill: this repo's own servers and skills instead, written into
                                 its checkouts by 0b apply (Claude Code's local scope, .codex/config.toml,
                                 .cursor/mcp.json, .claude/skills, .agents/skills), kept out of git
@@ -486,6 +488,8 @@ function addSkill(m: Manifest, scope: Pick<Manifest, "skills">, at: { root: stri
   if (resolve(dir) !== resolve(dst) && !same) copySkill(dir, dst);
   scope.skills[name] = { ...(had ?? {}), ...(values.only ? { targets: parseTools(values.only) } : {}) };
   saveManifest(ctx, m);
+  // Added by hand: the user chose it, so it may go up to 0bridge.
+  if (!at) markSkills(ctx, [name], "share");
   registerCheckout(at);
   for (const w of check.warnings) console.log(`  ${c.yellow("!")} ${w}`);
   const kept = readSkill(dst, name)?.skipped.filter((s) => /credential/.test(s.why)) ?? [];
@@ -495,6 +499,10 @@ function addSkill(m: Manifest, scope: Pick<Manifest, "skills">, at: { root: stri
 
 function skill(args: string[], values: Record<string, any>) {
   const [sub, name] = args;
+  if (sub === "share" || sub === "local") {
+    if (values.project) die(`a repo's skills stay in the repo: 0b skill ${sub} is for your own`);
+    return shareSkillsCommand(ctx, args.slice(1), sub);
+  }
   const m = requireManifest(ctx);
   const { scope, at } = scopeOf(m, values.project);
   const get = () => scope.skills[name!] ?? die(`no skill "${name}"${at ? ` in ${at.repo}` : ""}`);

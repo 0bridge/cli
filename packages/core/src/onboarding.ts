@@ -75,6 +75,7 @@ When the user asks to set up this machine or a repo ("sync the backend dev envir
 - A new skill written into one tool's skills folder (e.g. \`~/.claude/skills/<name>/SKILL.md\`): run \`0b import\` then \`0b apply --yes\` to share it with every tool.
 - A skill folder anywhere else (written by hand, downloaded): \`0b skill add <folder>\` checks it (SKILL.md with \`name\` and \`description\` front matter) and adds it to the synced skills; then \`0b apply --yes\`.
 - Only for one repo: \`0b mcp add <name> --project …\` and \`0b skill add <folder> --project\` inside it; \`0b apply --yes\` writes them into that repo's checkouts (kept out of git). \`0b project import\` brings what a checkout's tools already have there under 0bridge.
+- Uploading to 0bridge (the user's other machines and chat apps) is a separate choice: a skill that was never on 0bridge stays on this machine until the user decides. When \`0b status\` lists skills waiting for their call, ask the user once which to upload, then run \`0b skill share <name>\` for those and \`0b skill local <name>\` for the rest (it stops asking). \`0b skill add\` counts as their yes.
 - \`0b skill list\`, \`0b skill disable <name>\`.
 
 ## Claude Code and Codex accounts

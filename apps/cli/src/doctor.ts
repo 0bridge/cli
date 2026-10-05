@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { GLOBAL_SCOPE, computeStatus, loadCloud, loadHistoryConfig, loadManifest, openSecretStore, parseDotenv, vaultKeyId, type Context } from "@0bridge/core";
 import { backgroundInstalled } from "./background.ts";
 import { cloudClient } from "./cloud.ts";
+import { skillsToAsk } from "./context.ts";
 import { HOME_REPO, filesHere, repoHere } from "./files.ts";
 import { connectionTree, loadLinks, projectOf, toolStates } from "./project.ts";
 import { render } from "./tree.ts";
@@ -101,6 +102,9 @@ export async function doctorCommand(ctx: Context): Promise<void> {
 
     const history = loadHistoryConfig(ctx);
     machine.push(history.enabled ? { ok: true, label: "Conversations", detail: "synced from this machine" } : { ok: false, label: "Conversations", detail: "not synced from this machine", fix: "0b history on", who: "you" });
+    // Skills a tool brought along that were never uploaded: the user decides, once.
+    const asked = await skillsToAsk(ctx).catch(() => null);
+    if (asked?.length) machine.push({ ok: false, label: "Skills", detail: `${asked.length} here not on 0bridge, waiting for your call: ${some(asked)}`, fix: "0b skill share <name> | 0b skill local <name>", who: "you" });
     machine.push(backgroundInstalled(ctx) ? { ok: true, label: "Background sync", detail: "on" } : { ok: false, label: "Background sync", detail: "off: files and conversations sync only when 0b runs", fix: "0b background on", who: "agent" });
 
     // Connections that need the user.

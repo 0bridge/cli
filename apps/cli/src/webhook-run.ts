@@ -229,7 +229,7 @@ export function execRun(
     });
     // A command that doesn't read its input closes the pipe early; that's fine.
     child.stdin?.on("error", () => {});
-    child.stdin?.end(JSON.stringify({ id: ev.id, eventId: ev.eventId, hook: ev.hook, type: ev.type, receivedAt: ev.receivedAt, data: ev.data }));
+    child.stdin?.end(JSON.stringify({ id: ev.id, eventId: ev.eventId, hook: ev.hook, type: ev.type, receivedAt: ev.receivedAt, verified: true, data: ev.data }));
     child.on("close", (code, signal) => {
       clearTimeout(timer);
       o.signal?.removeEventListener("abort", onAbort);

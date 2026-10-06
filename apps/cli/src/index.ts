@@ -169,6 +169,8 @@ ${c.bold("Usage")}
   0b agent on|off|status       Let your AI apps start and steer coding agents on this machine
   0b agent allow|deny <path>   Repos agents may work in (nothing is allowed until you add one)
   0b agent log [task]          What tasks on this machine did (agent run: the daemon itself)
+  0b agent supervisor openclaw --agent <id>   Host work your AI apps request (Dots, ChatGPT, Claude) goes to
+        [--label <name>]        that OpenClaw agent here, one session per host-task task (off, status)
   0b sessions                  What your coding sessions are doing now, on every machine and in the cloud
         [--state needs-you]     (--machine m, --repo r); watch: refresh every 5 s
   0b sessions on|off           Post this machine's session states (Claude Code, Codex, Cursor) to your board
@@ -613,6 +615,7 @@ async function main() {
       "no-vault": { type: "boolean" },
       "no-wait": { type: "boolean" },
       preset: { type: "string" },
+      board: { type: "string" },
       route: { type: "string" },
       "routine-url": { type: "string" },
       template: { type: "string" },
@@ -633,6 +636,9 @@ async function main() {
       debounce: { type: "string" },
       timeout: { type: "string" },
       off: { type: "boolean" },
+      "host-task": { type: "string" },
+      openclaw: { type: "string" },
+      herdr: { type: "string" },
     },
   });
   const [cmd, ...rest] = positionals;
@@ -742,13 +748,24 @@ async function main() {
     case "memory":
       return memoryCommand(ctx, rest, { tags: values.tags, yes: values.yes });
     case "agent":
-      return agentCommand(ctx, rest, { repo: values.repo, mode: values.mode, yes: values.yes, quiet: values.quiet });
+      return agentCommand(ctx, rest, {
+        repo: values.repo,
+        mode: values.mode,
+        yes: values.yes,
+        quiet: values.quiet,
+        agent: values.agent,
+        label: values.label,
+        hostTask: values["host-task"],
+        openclaw: values.openclaw,
+        herdr: values.herdr,
+      });
     case "sessions":
       return sessionsCommand(ctx, rest, { state: values.state, machine: values.machine, repo: values.repo, json: values.json, quiet: values.quiet, worker: values.worker });
     case "webhook":
     case "webhooks":
       return webhookCommand(ctx, rest, {
         preset: values.preset,
+        board: values.board,
         route: values.route,
         repo: values.repo,
         agent: values.agent,

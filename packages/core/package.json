@@ -15,7 +15,10 @@
     "./agent-vm": "./src/agent-vm.ts",
     "./qr": "./src/qr.ts",
     "./notes": "./src/notes.ts",
-    "./drive-paths": "./src/drive-paths.ts"
+    "./drive-paths": "./src/drive-paths.ts",
+    "./host": "./src/host.ts",
+    "./trello": "./src/trello.ts",
+    "./readiness": "./src/readiness.ts"
   },
   "dependencies": {
     "@0bridge/session": "workspace:*",

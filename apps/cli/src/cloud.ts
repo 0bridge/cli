@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { hostname } from "node:os";
+import { stripVTControlCharacters } from "node:util";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
@@ -50,6 +51,7 @@ import {
 import { registryFirst, withRegistry } from "@0bridge/core/mcp-registry";
 import { qrPng, qrTerminal, qrTerminalWidth } from "@0bridge/core/qr";
 import { AGENT_VM_DEVICE_SCOPE } from "@0bridge/core/agent-vm";
+import { OFF_FIX, OFF_NOTE, readinessOf, toolsText, type ReadinessInput } from "@0bridge/core/readiness";
 import { c, canOpenBrowser, p, planSummary, spinner, where } from "./ui.ts";
 import { loginInto } from "./profile.ts";
 import { unlinkAccount } from "./project.ts";
@@ -995,13 +997,23 @@ export async function cloudStatus(ctx: Context) {
   for (const x of conns) console.log("  " + connectionLine(x));
 }
 
-export function connectionLine(x: { display: string; prefix: string; state: string; tools: number; url: string; toolsOn?: number; readOnly?: boolean; account?: string | null }, width = 20): string {
-  const state = x.state === "ready" ? c.green("ready") : x.state === "authenticating" ? c.yellow("needs sign-in") : c.red(x.state);
+/** Whether agents can use it, in a word or two: a signed-in connection with every tool off isn't "ready" (readiness.ts). */
+export function readinessWord(x: ReadinessInput): string {
+  const r = readinessOf(x);
+  const word = r.kind === "usable" ? (r.on < r.total ? "in use" : "ready") : r.kind === "loading" ? "connecting" : r.label.toLowerCase();
+  return (r.tone === "ok" ? c.green : r.tone === "warn" ? c.yellow : r.tone === "error" ? c.red : c.dim)(word);
+}
+
+export function connectionLine(x: { display: string; prefix: string; state: string; tools: number; url: string; toolsOn?: number; readOnly?: boolean; off?: string[]; account?: string | null }, width = 20): string {
+  const r = readinessOf(x);
+  const word = readinessWord(x);
   const pad = (s: string, n: number, visible = s.length) => s + " ".repeat(Math.max(1, n - visible));
-  // Only what the user changed, and who it's signed in as when the service said.
-  const off = x.toolsOn !== undefined && x.toolsOn < x.tools && !x.readOnly ? `${x.tools - x.toolsOn} off` : null;
-  const extra = [x.readOnly && "read-only", off, x.account && `as ${x.account}`].filter(Boolean).join(", ");
-  return `${pad(x.display, width)}${pad(state, x.state === "authenticating" ? 15 : 8, x.state === "authenticating" ? 13 : x.state.length)}${String(x.tools).padStart(3)} tools${extra ? ` ${c.yellow(`(${extra})`)}` : ""}  ${c.dim(`${x.prefix}__*  ${x.url}`)}`;
+  // Agents get `on` of `total`: "27 tools" with all on, "5/27 tools" or "0/27 tools" otherwise.
+  const count = r.on < r.total && r.kind !== "loading" ? `${r.on}/${r.total}` : String(r.total);
+  // Who it's signed in as when the service said; all off is still signed in, which is what makes it "tools off" and not gone.
+  const who = x.account ? `${r.kind === "off" ? "still signed in " : ""}as ${x.account}` : r.kind === "off" && "still signed in";
+  const extra = [x.readOnly && "read-only", who].filter(Boolean).join(", ");
+  return `${pad(x.display, width)}${pad(word, 15, stripVTControlCharacters(word).length)}${count.padStart(5)} ${r.total === 1 ? "tool " : "tools"}${extra ? ` ${c.dim(`(${extra})`)}` : ""}  ${c.dim(`${x.prefix}__*  ${x.url}`)}`;
 }
 
 /**
@@ -1033,7 +1045,10 @@ export async function connectionCommand(ctx: Context, args: string[], opts: { la
       const t = await client.connectionTools(conn.id);
       if (opts.json) return console.log(JSON.stringify({ ...conn, tools: t.tools }, null, 2));
       const on = t.tools.filter((x) => !x.off).length;
-      console.log(`${c.bold(conn.display)}  ${conn.state === "ready" ? c.green("ready") : c.yellow(conn.state)}${conn.account ? `  ${c.dim("signed in as")} ${conn.account}` : ""}`);
+      const live = { ...conn, tools: t.tools.length, toolsOn: on };
+      console.log(`${c.bold(conn.display)}  ${readinessWord(live)}${conn.account ? `  ${c.dim("signed in as")} ${conn.account}` : ""}`);
+      const r = readinessOf(live);
+      if (r.kind === "off") console.log(`  ${c.dim(r.offBy === "user" ? `${OFF_NOTE} (${again} tool on <name>)` : `Agents get none of its tools: ${toolsText(r)}. Still signed in: ${OFF_FIX[r.offBy ?? "read-only"]} (${again} read-only off).`)}`);
       console.log(`  ${c.dim("about".padEnd(10))}${conn.description ?? c.dim(`— (${again} describe "work tracker")`)}`);
       console.log(`  ${c.dim("tags".padEnd(10))}${conn.tags?.length ? conn.tags.join(", ") : c.dim(`— (${again} tags work,acme)`)}`);
       console.log(`  ${c.dim("read-only".padEnd(10))}${t.readOnly ? c.yellow("on") + c.dim(" (agents get only tools that read)") : "off"}`);

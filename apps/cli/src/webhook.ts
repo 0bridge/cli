@@ -1,3 +1,4 @@
+import { trelloHostCommand, loadTrelloRelay, saveTrelloRelay } from "./trello-host.ts";
 import { readFileSync } from "node:fs";
 import { CloudError, type CloudClient, type Context } from "@0bridge/core";
 import { cloudClient } from "./cloud.ts";
@@ -18,6 +19,7 @@ import { RUN_DEFAULTS, RUN_MAX, currentRuns, loadRuns, logPath, machineName, run
 
 export interface WebhookOptions {
   preset?: string;
+  board?: string;
   route?: string;
   repo?: string;
   agent?: string;
@@ -52,7 +54,7 @@ type Route =
 export interface Endpoint {
   id: string;
   name: string;
-  preset: "channeltalk" | "github" | "generic";
+  preset: "channeltalk" | "github" | "generic" | "trello";
   verify: { mode: string; header?: string; param?: string };
   route: Route;
   notify: boolean;
@@ -130,10 +132,10 @@ const TTY_IO: WebhookIo = {
   sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
 };
 
-const PRESETS = ["channeltalk", "github", "generic"] as const;
+const PRESETS = ["channeltalk", "github", "generic", "trello"] as const;
 /** What --route takes; "queue" still works (older scripts) and means store. */
 const ROUTES = ["run", "forward", "agent", "notify", "store", "routine"] as const;
-const TITLE: Record<Endpoint["preset"], string> = { channeltalk: "Channel Talk", github: "GitHub", generic: "Generic (Standard Webhooks)" };
+const TITLE: Record<Endpoint["preset"], string> = { channeltalk: "Channel Talk", github: "GitHub", trello: "Trello", generic: "Generic (Standard Webhooks)" };
 /** The action prompt of `0b webhook add`, in the order people pick them. */
 const ACTIONS: { value: (typeof ROUTES)[number]; label: string; hint: string }[] = [
   { value: "run", label: "Run a command on this machine", hint: "a script you have here; the event's JSON on its input" },
@@ -221,6 +223,7 @@ export function splitCommand(line: string, platform = process.platform): string[
 
 /** The preset's setup steps, printed once with the address. */
 export function setupSteps(preset: Endpoint["preset"], url: string, name: string): string[] {
+  if (preset === "trello") return ["Set your own REST key/token/app secret through 0bridge secret input, then run 0b exec -- 0b webhook trello-register " + name, "Register only the approved board. A stored event or answer is not worker delivery or completion evidence."];
   if (preset === "channeltalk")
     return [
       "In Channel Talk: Desk → Settings → Webhook → add one.",
@@ -341,6 +344,24 @@ function showRoute(r: StoredEvent["route"], server: string) {
 
 export async function webhookCommand(ctx: Context, args: string[], opts: WebhookOptions, io: WebhookIo = TTY_IO): Promise<void> {
   const [sub = "list", name] = args;
+  // Local opt-in and local event consumption do not need a cloud account or start a service.
+  if (sub === "trello-relay") {
+    if (!name || name === "status") return console.log(JSON.stringify(loadTrelloRelay(ctx) ?? { enabled: false }));
+    if (name === "configure") return console.log(JSON.stringify(saveTrelloRelay(ctx, JSON.parse(readStdin()))));
+    if (name === "off") {
+      const cfg = loadTrelloRelay(ctx);
+      if (cfg) saveTrelloRelay(ctx, { ...cfg, enabled: false });
+      return console.log(JSON.stringify({ enabled: false }));
+    }
+    throw new Error("usage: 0b webhook trello-relay status|configure|off (configure reads non-secret JSON on stdin)");
+  }
+  if (sub === "trello-host") {
+    if (!opts.board) throw new Error("trello-host needs --board <approved raw board id>");
+    const result = await trelloHostCommand(ctx, opts.board, JSON.parse(readStdin()));
+    console.log(JSON.stringify(result));
+    if (result.status === "pending" || result.status === "unconfirmed") process.exitCode = 1;
+    return;
+  }
   const { cfg, client } = cloudClient(ctx);
   const server = cfg.server.replace(/\/+$/, "");
 
@@ -389,17 +410,21 @@ export async function webhookCommand(ctx: Context, args: string[], opts: Webhook
       const { route, routineToken } = await routeFrom(kind, opts, io);
       let r: { endpoint: Endpoint; secret: string; url: string; forwardSecret?: string };
       try {
-        r = await client.call("POST", "/triggers", { name, preset, ...(route && route.kind !== "store" ? { route } : {}), ...(routineToken ? { routineToken } : {}), ...(opts.notify ? { notify: true } : {}) });
+        if (preset === "trello" && !/^[a-f0-9]{24}$/.test(opts.board ?? "")) throw new Error("--preset trello needs --board <raw board id>");
+        r = await client.call("POST", "/triggers", { name, preset, ...(preset === "trello" ? { verify: { mode: "trello", board: opts.board } } : {}), ...(route && route.kind !== "store" ? { route } : {}), ...(routineToken ? { routineToken } : {}), ...(opts.notify ? { notify: true } : {}) });
       } catch (e) {
         if (e instanceof CloudError && e.code === "STEP_UP_REQUIRED")
           throw new Error(`letting a webhook start agents in edit mode is set on the dashboard (with your passkey): add it here in plan mode, then switch it at ${server}/app/triggers`);
         throw e;
       }
-      if (opts.json) return console.log(JSON.stringify(r, null, 2));
+      if (opts.json) {
+        if (preset === "trello") { const { secret, ...safe } = r; return console.log(JSON.stringify(safe, null, 2)); }
+        return console.log(JSON.stringify(r, null, 2));
+      }
       console.log(`${c.green("✓")} ${c.bold(r.endpoint.name)}: ${routeText(r.endpoint)}`);
       console.log(`  URL:     ${r.url}`);
-      if (r.endpoint.verify.mode !== "query") console.log(`  Secret:  ${r.secret}`);
-      console.log(c.dim(`  ${r.endpoint.verify.mode === "query" ? "The URL holds the secret" : "The secret is shown"} only now; \`0b webhook rotate ${r.endpoint.name}\` makes a new one.`));
+      if (preset !== "trello" && r.endpoint.verify.mode !== "query") console.log(`  Secret:  ${r.secret}`);
+      if (preset !== "trello") console.log(c.dim(`  ${r.endpoint.verify.mode === "query" ? "The URL holds the secret" : "The secret is shown"} only now; \`0b webhook rotate ${r.endpoint.name}\` makes a new one.`));
       for (const s of setupSteps(r.endpoint.preset, r.url, r.endpoint.name)) console.log(`  · ${s}`);
       if (r.forwardSecret) showForwardSecret(r.forwardSecret);
       if (r.endpoint.route.kind === "agent")
@@ -437,7 +462,8 @@ export async function webhookCommand(ctx: Context, args: string[], opts: Webhook
         throw new Error(`usage: 0b webhook run ${name} -- <command…>  (the command after --, e.g. 0b webhook run ${name} -- python3 sync.py)`);
       }
       const e = await find(client, name, "0b webhook run <name> -- <command…>");
-      const run = saveCommand(ctx, server, cfg.userId, e.name, argv, opts);
+      if (e.preset === "trello" && opts.debounce && opts.debounce !== "0") throw new Error("Trello comments must not be folded together; use --debounce 0");
+      const run = saveCommand(ctx, server, cfg.userId, e.name, argv, e.preset === "trello" ? { ...opts, debounce: "0" } : opts);
       let routed = e.route.kind === "run" && (!opts.machine || e.route.machine === opts.machine);
       if (!routed) {
         const replacing = e.route.kind !== "queue" && e.route.kind !== "run";
@@ -514,6 +540,35 @@ export async function webhookCommand(ctx: Context, args: string[], opts: Webhook
       return;
     }
 
+    case "trello-compatibility": {
+      if (!opts.board || !/^[a-f0-9]{24}$/.test(opts.board)) throw new Error("trello-compatibility needs --board <approved raw board id>");
+      const connections = (await client.connections()).filter(e => e.service === "trello" && e.kind === "mcp" && e.url === "https://mcp.trello.com/v1" && (!name || e.id === name || e.display === name));
+      if (connections.length !== 1) throw new Error("select exactly one existing official Trello MCP connection");
+      const r = await client.call("GET", `/connections/${encodeURIComponent(connections[0]!.id)}/trello-webhook-compatibility?board=${opts.board}`);
+      console.log(JSON.stringify(r, null, 2));
+      return;
+    }
+
+    case "trello-register":
+    case "trello-remove": {
+      const e = await find(client, name, "0b webhook trello-register|trello-remove <name>");
+      if (e.preset !== "trello") throw new Error("this needs a Trello preset");
+      const token = process.env.TRELLO_TOKEN;
+      const key = process.env.TRELLO_API_KEY;
+      const appSecret = process.env.TRELLO_APP_SECRET;
+      if (!token || !key || (sub === "trello-register" && !appSecret)) throw new Error("Use 0bridge secret input for TRELLO_API_KEY, TRELLO_TOKEN, TRELLO_APP_SECRET; then 0b exec -- 0b webhook " + sub + " " + e.name);
+      const r = await client.call<{ id?: string; reused?: boolean; removed?: number }>("POST", `/triggers/${encodeURIComponent(e.id)}/trello`, { auth: { mode: "token", token, key }, appSecret, remove: sub === "trello-remove" });
+      console.log(sub === "trello-remove" ? `Trello subscriptions removed: ${r.removed}` : `Trello subscription ${r.reused ? "reused" : "registered"}: ${r.id}`);
+      return;
+    }
+    case "trello-replay": {
+      if (!opts.board || !name) throw new Error("trello-replay <stored event id> --board <approved raw board id>");
+      const event = await client.call<StoredEvent>("GET", `/triggers/events/${encodeURIComponent(name)}`);
+      const result = await trelloHostCommand(ctx, opts.board, event);
+      console.log(JSON.stringify(result));
+      if (result.status === "pending" || result.status === "unconfirmed") process.exitCode = 1;
+      return;
+    }
     case "token": {
       // The sender's own token (Channel Talk makes one per webhook): typed hidden, or one line on stdin.
       const e = await find(client, name, "0b webhook token <name>");
@@ -532,6 +587,7 @@ export async function webhookCommand(ctx: Context, args: string[], opts: Webhook
 
     case "rotate": {
       const e = await find(client, name, "0b webhook rotate <name>");
+      if (e.preset === "trello") throw new Error("Trello signs with your app secret; use trello-register with the updated vault value");
       const r = await client.call<{ secret: string; url: string }>("POST", `/triggers/${encodeURIComponent(e.id)}/rotate`, {});
       if (opts.json) return console.log(JSON.stringify(r, null, 2));
       console.log(`${c.green("✓")} ${e.name} has a new secret; the old one stopped working.`);

@@ -8,6 +8,8 @@ import { Daemon } from "../src/agent/daemon.ts";
 import { readTask } from "../src/agent/log.ts";
 import { DEFAULT_DENY, saveAgentConfig, type AgentConfig } from "../src/agent/policy.ts";
 import type { EventFrame, HubRequest } from "../src/agent/protocol.ts";
+import { readSupervisorState } from "../src/agent/supervisor.ts";
+import { fakeHost } from "./fake-host.ts";
 
 /** The daemon with stand-in agents, a scratch git repo and a fake hub that records frames. */
 function setup(cfg: Partial<AgentConfig> = {}) {
@@ -165,6 +167,31 @@ describe("agent daemon", () => {
     daemon.connected(() => true);
     await expect(daemon.request({ t: "req", rid: "r1", op: "send", native: { tool: "claude", id: "w1:p4", cwd: repo }, text: "hi" })).rejects.toThrow(/isn't in a repo agents may use/);
     expect(attached).toEqual([]);
+  });
+
+  test("with a supervisor set up, the hello names it and host requests, frames and acks go through it", async () => {
+    const s = setup();
+    await expect(s.req({ op: "host.status" })).rejects.toThrow(/no supervisor is set up/);
+    expect((await s.daemon.hello()).host).toBeUndefined();
+    const host = fakeHost(join(s.base, "host"));
+    const supervisor = { kind: "openclaw" as const, agent: "lead", label: "dev-herdr-agent", hostTask: host.bins.hostTask, openclaw: host.bins.openclaw, herdr: host.bins.herdr, pollMs: 30, maxDispatch: 2 };
+    saveAgentConfig(s.ctx, { enabled: true, repos: [{ root: s.repo, mode: "edit", worktree: true, deny: [] }], supervisor });
+    // Only who it is: no paths, no flags.
+    expect((await s.daemon.hello()).host).toEqual({ kind: "openclaw", agent: "lead", label: "dev-herdr-agent" });
+    const r = (await s.req({ op: "host.request", requestId: "hr_daemon0001", text: "Tidy the README", title: "README" })) as { task: { id: string }; dispatch: string };
+    expect([r.task.id, r.dispatch]).toEqual(["T-001", "queued"]);
+    await s.daemon.onFrame({ t: "host-cursor", cursor: 0 });
+    await s.until(() => s.frames.some((f) => f.t === "host-events"));
+    const f = s.frames.find((x) => x.t === "host-events");
+    expect(f.events.map((e: { kind: string }) => e.kind)).toContain("task_requested");
+    await s.daemon.onFrame({ t: "host-ack", cursor: f.cursor });
+    expect(readSupervisorState(s.ctx).cursor).toBe(f.cursor);
+    expect((s.daemon as any).host.sup.status()).toMatchObject({ agent: "lead", cursor: f.cursor });
+    // Agent control off: no host in the hello, and host requests are refused.
+    saveAgentConfig(s.ctx, { enabled: false, repos: [], supervisor });
+    expect((await s.daemon.hello()).host).toBeUndefined();
+    await expect(s.req({ op: "host.status" })).rejects.toThrow(/agent control is off/);
+    await s.daemon.shutdown();
   });
 
   test("hello lists what this machine offers", async () => {

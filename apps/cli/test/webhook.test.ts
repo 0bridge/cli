@@ -56,6 +56,12 @@ const server = Bun.serve({
     const body = raw ? JSON.parse(raw) : undefined;
     reqs.push({ method: r.method, path: u.pathname, query: Object.fromEntries(u.searchParams), auth: r.headers.get("authorization"), body, raw });
     const path = u.pathname.replace(/^\/api/, "");
+    if (path === "/connections" && r.method === "GET") return Response.json([
+      { id: "trello-existing", service: "trello", display: "trello", kind: "mcp", url: "https://mcp.trello.com/v1" },
+      { id: "other", service: "trello", display: "untrusted", kind: "mcp", url: "https://other.example/mcp" },
+    ]);
+    if (path === "/connections/trello-existing/trello-webhook-compatibility" && r.method === "GET")
+      return Response.json({ rest: "accepted", status: 200, signingSecretAvailable: false, registrationSupported: false });
     if (path === "/triggers" && r.method === "GET") return Response.json(endpoints);
     if (path === "/triggers" && r.method === "POST") {
       const b = body as { name: string; preset: Endpoint["preset"]; route?: Record<string, unknown> };
@@ -146,6 +152,17 @@ afterEach(() => {
 });
 
 describe("0b webhook", () => {
+  test("Trello compatibility uses the existing official connection with reads only and no credential input", async () => {
+    const board = "6ac3b9821dc2644f39df0761";
+    await webhookCommand(ctx, ["trello-compatibility"], { board }, io());
+    expect(reqs.map(r => [r.method, r.path])).toEqual([
+      ["GET", "/api/connections"],
+      ["GET", "/api/connections/trello-existing/trello-webhook-compatibility"],
+    ]);
+    expect(reqs.at(-1)!.query).toEqual({ board });
+    expect(out.join("\n")).toContain('"registrationSupported": false');
+    await expect(webhookCommand(ctx, ["trello-compatibility", "untrusted"], { board }, io())).rejects.toThrow("exactly one");
+  });
   test("add: the preset, the URL with its token once, and the setup steps; signed in with the device token; Store by default", async () => {
     await webhookCommand(ctx, ["add", "support"], { preset: "channeltalk" }, io());
     const post = reqs.find((r) => r.method === "POST")!;
@@ -160,6 +177,18 @@ describe("0b webhook", () => {
     // --route queue still works and means Store.
     await webhookCommand(ctx, ["add", "old"], { route: "queue" }, io());
     expect(reqs.at(-1)!.body).toEqual({ name: "old", preset: "generic" });
+  });
+
+  test("Trello add scopes the board and hides generated secrets; run disables debounce so comments cannot be lost", async () => {
+    const board = "6ac3b9821dc2644f39df0761";
+    await webhookCommand(ctx, ["add", "trello-board"], { preset: "trello", board }, io());
+    expect(reqs.find(r => r.method === "POST")?.body).toEqual({ name: "trello-board", preset: "trello", verify: { mode: "trello", board } });
+    expect(out.join("\n")).not.toContain("whsec_c2VjcmV0");
+    expect(out.join("\n")).toContain("trello-register");
+    await webhookCommand(ctx, ["run", "trello-board"], { command: ["0b", "webhook", "trello-host", "--board", board], yes: true }, io());
+    expect(loadRuns(ctx)?.runs["trello-board"]?.debounceSec).toBe(0);
+    await expect(webhookCommand(ctx, ["run", "trello-board"], { command: ["echo"], debounce: "30", yes: true }, io())).rejects.toThrow("must not be folded");
+    await expect(webhookCommand(ctx, ["rotate", "trello-board"], {}, io())).rejects.toThrow("app secret");
   });
 
   test("add on a terminal without --route asks what each event does; run asks for the command and keeps it here", async () => {

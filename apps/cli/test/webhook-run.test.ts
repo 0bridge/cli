@@ -91,7 +91,7 @@ describe("one run", () => {
     r.onFrame(job(e));
     await r.idle();
     const got = recorded(e);
-    expect(JSON.parse(got.input)).toEqual({ id: e.id, eventId: "m-1", hook: "ct", type: "Message.push", receivedAt: e.receivedAt, data: e.data });
+    expect(JSON.parse(got.input)).toEqual({ id: e.id, eventId: "m-1", hook: "ct", type: "Message.push", receivedAt: e.receivedAt, verified: true, data: e.data });
     expect(got.env).toMatchObject({
       ZEROBRIDGE_EVENT_ID: e.id,
       ZEROBRIDGE_EVENT_SENDER_ID: "m-1",

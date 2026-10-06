@@ -9,7 +9,9 @@ import { Daemon, machineName, runDaemon } from "./daemon.ts";
 import { ipcPath, ipcRequest } from "./ipc.ts";
 import { listTasks, readTask } from "./log.ts";
 import { guard, permMcp } from "./perm-mcp.ts";
-import { DEFAULT_DENY, MODES, loadAgentConfig, realPath, saveAgentConfig, tooBroad, type Mode } from "./policy.ts";
+import { runAgent } from "./adapters/spawn.ts";
+import { DEFAULT_DENY, MODES, SUPERVISOR_AGENT, loadAgentConfig, realPath, saveAgentConfig, tooBroad, type Mode } from "./policy.ts";
+import { readSupervisorState } from "./supervisor.ts";
 
 /**
  * `0b agent`: let your AI apps start and steer coding agents on this machine, in the repos
@@ -23,6 +25,12 @@ export interface AgentOptions {
   mode?: string;
   yes?: boolean;
   quiet?: boolean;
+  /** `0b agent supervisor openclaw`: the OpenClaw agent id, its label, and the binaries. */
+  agent?: string;
+  label?: string;
+  hostTask?: string;
+  openclaw?: string;
+  herdr?: string;
 }
 
 function fail(msg: string): never {
@@ -30,7 +38,8 @@ function fail(msg: string): never {
   process.exit(1);
 }
 
-const USAGE = `usage: 0b agent on [path] [--mode plan|edit|auto] | off | status | allow <path> [--mode m] | deny <path> | run | log [task]`;
+const USAGE = `usage: 0b agent on [path] [--mode plan|edit|auto] | off | status | allow <path> [--mode m] | deny <path> | run | log [task] | supervisor openclaw --agent <id> | supervisor off | supervisor status`;
+const SUPERVISOR_USAGE = "usage: 0b agent supervisor openclaw --agent <id> [--label <name>] [--host-task <bin>] [--openclaw <bin>] [--herdr <bin>] | supervisor off | supervisor status";
 
 async function confirm(q: string): Promise<boolean> {
   if (!process.stdin.isTTY) return false;
@@ -90,6 +99,8 @@ export async function agentCommand(ctx: Context, args: string[], opts: AgentOpti
       return runDaemon(ctx);
     case "log":
       return log(ctx, rest[0]);
+    case "supervisor":
+      return supervisor(ctx, rest, opts);
     case "perm-mcp":
       if (!rest[0]) fail("usage: 0b agent perm-mcp <task file>");
       return permMcp(rest[0]);
@@ -166,6 +177,72 @@ async function status(ctx: Context): Promise<void> {
   console.log(`\n${c.bold("Repos")}${cfg.repos.length ? "" : c.dim("  none: 0b agent allow <path>")}`);
   for (const r of cfg.repos) console.log(`  ${r.root}  ${c.dim(`${r.mode}${r.worktree ? ", worktree per task" : ", in place"}${r.agents ? `, ${r.agents.join("/")}` : ""}${r.deny.length ? `, +${r.deny.length} rules` : ""}`)}`);
   for (const t of live?.tasks.filter((t) => ["starting", "running", "waiting"].includes(t.state)) ?? []) console.log(`  ${c.cyan(t.id)} ${t.agent} ${t.state} ${c.dim(t.cwd)}`);
+  const sup = cfg.supervisor;
+  console.log(
+    `\n${c.bold("Supervisor")}  ${sup ? `openclaw/${sup.agent}${sup.label ? ` (${sup.label})` : ""}${c.dim(`, host-task cursor ${readSupervisorState(ctx).cursor ?? "not set yet"}`)}` : c.dim("none: 0b agent supervisor openclaw --agent <id>")}`,
+  );
+}
+
+/**
+ * `0b agent supervisor`: who takes host work asked for through 0bridge (docs/plans/dots-host.md).
+ * Set only here, on the machine; the server learns no more than the agent's id and label. Each
+ * binary is checked before it's saved.
+ */
+function supervisor(ctx: Context, args: string[], opts: AgentOptions): void {
+  const [what] = args;
+  const cfg = loadAgentConfig(ctx);
+  if (what === "off") {
+    if (!cfg.supervisor) return console.log(c.dim("No supervisor is set up on this machine."));
+    delete cfg.supervisor;
+    saveAgentConfig(ctx, cfg);
+    return console.log(`${c.green("✓")} Host work no longer goes to a supervisor here; AI apps can't request host tasks on ${machineName()}.`);
+  }
+  if (what === "status" || what === undefined) {
+    const s = cfg.supervisor;
+    if (!s) return console.log(c.dim("No supervisor is set up on this machine: 0b agent supervisor openclaw --agent <id>"));
+    const st = readSupervisorState(ctx);
+    console.log(`${c.bold("Supervisor")}  openclaw/${s.agent}${s.label ? ` (${s.label})` : ""}${cfg.enabled ? "" : c.yellow("  (agent control is off here: 0b agent on)")}`);
+    console.log(`  host-task: ${s.hostTask}  openclaw: ${s.openclaw}  herdr: ${s.herdr}`);
+    console.log(`  cursor: ${st.cursor ?? c.dim("not set yet (starts at the end of host-task's log)")}`);
+    console.log(`  queued for ${s.agent}: ${st.queue.length}${st.queue.length ? c.dim(` (${st.queue.map((d) => `${d.id} → ${d.task}${d.attempts ? `, ${d.attempts} failed` : ""}`).join("; ")})`) : ""}`);
+    if (st.lastError) console.log(`  last error: ${c.yellow(st.lastError.text)} ${c.dim(new Date(st.lastError.at).toISOString().slice(0, 16).replace("T", " "))}`);
+    return;
+  }
+  if (what !== "openclaw") fail(SUPERVISOR_USAGE);
+  const agent = opts.agent ?? cfg.supervisor?.agent;
+  if (!agent || !SUPERVISOR_AGENT.test(agent)) fail(`--agent is the OpenClaw agent's id (lead, …). ${SUPERVISOR_USAGE}`);
+  const bins = { hostTask: opts.hostTask ?? cfg.supervisor?.hostTask ?? "host-task", openclaw: opts.openclaw ?? cfg.supervisor?.openclaw ?? "openclaw", herdr: opts.herdr ?? cfg.supervisor?.herdr ?? "herdr" };
+  for (const [name, bin, args] of [
+    ["host-task", bins.hostTask, ["--help"]],
+    ["openclaw", bins.openclaw, ["--version"]],
+    ["herdr", bins.herdr, ["--version"]],
+  ] as const) {
+    if (bin.startsWith("-")) fail(`${name}: ${bin} isn't a program`);
+    const r = runAgent(bin, [...args], { timeout: 20_000 });
+    if (r.code !== 0) fail(`${name} (${bin}) doesn't run here${r.err.trim() ? `: ${r.err.trim().split("\n").at(-1)}` : ""}`);
+  }
+  // host-task's event log must read as JSON: that's what the daemon follows.
+  const ev = runAgent(bins.hostTask, ["events", "--since=0", "--limit=1"], { timeout: 20_000 });
+  let readable = false;
+  try {
+    readable = ev.code === 0 && Array.isArray((JSON.parse(ev.out) as { events?: unknown }).events);
+  } catch {}
+  if (!readable) fail(`host-task events didn't answer as expected${ev.err.trim() ? ` (${ev.err.trim().split("\n").at(-1)})` : ""}`);
+  const list = runAgent(bins.openclaw, ["agents", "list", "--json"], { timeout: 30_000 });
+  let known = false;
+  try {
+    const all = JSON.parse(list.out) as unknown;
+    const arr = Array.isArray(all) ? all : ((all as { agents?: unknown[] })?.agents ?? []);
+    known = arr.some((a) => (typeof a === "string" ? a : (a as { id?: string; agentId?: string })?.id ?? (a as { agentId?: string })?.agentId) === agent);
+  } catch {}
+  const label = opts.label?.trim() || cfg.supervisor?.label || null;
+  cfg.supervisor = { kind: "openclaw", agent, label, ...bins, pollMs: cfg.supervisor?.pollMs ?? 3000, maxDispatch: cfg.supervisor?.maxDispatch ?? 2 };
+  saveAgentConfig(ctx, cfg);
+  console.log(`${c.green("✓")} Host work your AI apps request through 0bridge goes to OpenClaw's ${c.bold(agent)}${label ? ` (${label})` : ""} on ${machineName()}.`);
+  if (!known) console.log(c.yellow(`  openclaw agents list doesn't show an agent "${agent}"; check the id (it's saved anyway).`));
+  console.log(c.dim(`  Each task gets its own ${agent} session (0bridge-t-…); replies stay in OpenClaw and host-task, nothing is posted to Slack or any channel.`));
+  console.log(c.dim(`  ${agent} decides where and how the work runs: the repos and modes allowed with 0b agent allow apply to agents 0bridge starts itself, not to host work.`));
+  if (!cfg.enabled) console.log(c.yellow(`  Agent control is off on this machine, so nothing reaches it yet: 0b agent on`));
 }
 
 function log(ctx: Context, task?: string): void {

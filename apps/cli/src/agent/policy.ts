@@ -35,6 +35,48 @@ export interface AgentConfig {
   repos: RepoPolicy[];
   /** Named accounts per agent (K13): a task can start under one; never picked automatically. */
   profiles?: { claude?: Record<string, { CLAUDE_CONFIG_DIR: string }>; codex?: Record<string, { CODEX_HOME: string }> };
+  /** The host's supervisor (docs/plans/dots-host.md): set only here, with `0b agent supervisor`. */
+  supervisor?: SupervisorConfig;
+}
+
+/**
+ * Who takes host work requested through 0bridge (Dots, ChatGPT, Claude): OpenClaw's agent
+ * `agent`, which runs the Herdr workers and keeps `host-task`'s records. The binaries are names on
+ * PATH or absolute paths. Nothing here says where replies go: the adapter never asks OpenClaw to
+ * deliver anywhere (no Slack, no channel).
+ */
+export interface SupervisorConfig {
+  kind: "openclaw";
+  agent: string;
+  label: string | null;
+  hostTask: string;
+  openclaw: string;
+  herdr: string;
+  /** How often host-task's events are read (ms). */
+  pollMs: number;
+  /** `openclaw` processes at once, at most (the host is low on memory). */
+  maxDispatch: number;
+}
+
+/** An OpenClaw agent id: never something its CLI could read as an option. */
+export const SUPERVISOR_AGENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/** agent.json's supervisor, checked, with the defaults filled in; undefined when unset or unusable. */
+export function supervisorConfig(raw: unknown): SupervisorConfig | undefined {
+  const s = raw as Partial<SupervisorConfig> | null | undefined;
+  if (!s || typeof s !== "object" || s.kind !== "openclaw" || typeof s.agent !== "string" || !SUPERVISOR_AGENT.test(s.agent)) return undefined;
+  const bin = (v: unknown, dflt: string) => (typeof v === "string" && v.trim() && !v.startsWith("-") ? v : dflt);
+  const num = (v: unknown, dflt: number, min: number, max: number) => (typeof v === "number" && Number.isFinite(v) ? Math.min(max, Math.max(min, Math.round(v))) : dflt);
+  return {
+    kind: "openclaw",
+    agent: s.agent,
+    label: typeof s.label === "string" && s.label.trim() ? s.label.trim().slice(0, 80) : null,
+    hostTask: bin(s.hostTask, "host-task"),
+    openclaw: bin(s.openclaw, "openclaw"),
+    herdr: bin(s.herdr, "herdr"),
+    pollMs: num(s.pollMs, 3000, 20, 60_000),
+    maxDispatch: num(s.maxDispatch, 2, 1, 4),
+  };
 }
 
 /**
@@ -93,10 +135,12 @@ const configPath = (ctx: Context) => join(ctx.storeDir, "agent.json");
 
 export function loadAgentConfig(ctx: Context): AgentConfig {
   const cfg = readJson<Partial<AgentConfig>>(configPath(ctx));
+  const supervisor = supervisorConfig(cfg?.supervisor);
   return {
     enabled: cfg?.enabled === true,
     repos: (cfg?.repos ?? []).map((r) => ({ ...r, mode: MODES.includes(r.mode) ? r.mode : "edit", worktree: r.worktree !== false, deny: Array.isArray(r.deny) ? r.deny : [] })),
     ...(cfg?.profiles ? { profiles: cfg.profiles } : {}),
+    ...(supervisor ? { supervisor } : {}),
   };
 }
 

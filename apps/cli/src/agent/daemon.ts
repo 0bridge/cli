@@ -17,15 +17,17 @@ import { PERM_WAIT_MS, removeTaskFile, writeTaskFile } from "./perm-mcp.ts";
 import { AGENT_IDS, clampMode, denyRules, loadAgentConfig, profileEnv, repoFor, saveAgentConfig, withUseProfiles, type AgentConfig, type AgentId, type Mode, type RepoPolicy } from "./policy.ts";
 import { installService } from "../service.ts";
 import { vaultValues } from "../vault.ts";
+import { HostSupervisor, type SupervisorOptions } from "./supervisor.ts";
 import { connectLoop, type Conn } from "./ws.ts";
-import type { DaemonAgentId, EventData, EventFrame, EventKind, HelloFrame, HubRequest, ReplyFrame, RunningSession, TaskState } from "./protocol.ts";
+import type { DaemonAgentId, EventData, EventFrame, EventKind, HelloFrame, HostOp, HubFrame, HubRequest, ReplyFrame, RunningSession, TaskState } from "./protocol.ts";
 
 /**
  * The machine's agent daemon: it holds the connection to the machine hub, starts and
  * steers tasks there asks for, and relays what they do. Every request is checked against this
  * machine's own rules (agent.json) first: agents run only in allowed repos, never in a mode above
  * the repo's, by default each in its own worktree, and never run the refused commands. A
- * permission prompt nobody answers in 30 minutes is a no.
+ * permission prompt nobody answers in 30 minutes is a no. With a supervisor set up here
+ * (`0b agent supervisor`), host work goes through it (supervisor.ts).
  */
 
 declare const VERSION: string;
@@ -66,6 +68,8 @@ export interface DaemonOptions {
   /** Adapters to use instead of the real ones (tests). */
   adapters?: Partial<Record<DaemonAgentId, AgentAdapter>>;
   log?: (line: string) => void;
+  /** The host supervisor's waits (tests). */
+  supervisor?: Omit<SupervisorOptions, "mask" | "log">;
 }
 
 export class Daemon {
@@ -76,12 +80,16 @@ export class Daemon {
   private send: ((frame: object) => boolean) | null = null;
   private log: (line: string) => void;
   private secrets: { at: number; values: string[] } | null = null;
+  /** The host supervisor, while agent.json sets one up (key: its settings). */
+  private host: { key: string; sup: HostSupervisor } | null = null;
+  private supOpts: DaemonOptions["supervisor"];
 
   constructor(
     readonly ctx: Context,
     opts: DaemonOptions = {},
   ) {
     this.log = opts.log ?? ((line) => console.log(`${new Date().toISOString().slice(11, 19)} ${line}`));
+    this.supOpts = opts.supervisor;
     const deny = (task: string) => this.tasks.get(task)?.deny ?? denyRules(null);
     const head = (task: string) => this.tasks.get(task)?.branch;
     if (opts.adapters) this.adapters = opts.adapters;
@@ -128,6 +136,8 @@ export class Daemon {
     );
     const usable = agents.filter((a) => a.ok && AGENT_IDS.includes(a.id as AgentId)).map((a) => a.id);
     const profiles = Object.fromEntries(Object.entries(cfg.profiles ?? {}).map(([agent, p]) => [agent, Object.keys(p ?? {})]));
+    // Connected: agent.json may have changed, so the supervisor follows it before the hub hears.
+    if (this.send) this.supervisor();
     return {
       t: "hello",
       v: 1,
@@ -135,12 +145,29 @@ export class Daemon {
       agents,
       repos: cfg.enabled ? cfg.repos.map((r) => ({ root: r.root, repo: repoName(r.root), agents: (r.agents ?? usable).filter((a) => usable.includes(a)), mode: r.mode, worktree: r.worktree })) : [],
       ...(Object.keys(profiles).length ? { profiles } : {}),
+      // Only who it is: never paths or flags.
+      ...(cfg.enabled && cfg.supervisor ? { host: { kind: cfg.supervisor.kind, agent: cfg.supervisor.agent, label: cfg.supervisor.label } } : {}),
     };
+  }
+
+  /** The supervisor agent.json sets up (with agent control on), made again when its settings change; null without one. */
+  supervisor(): HostSupervisor | null {
+    const cfg = loadAgentConfig(this.ctx);
+    const key = cfg.enabled && cfg.supervisor ? JSON.stringify(cfg.supervisor) : null;
+    if ((this.host?.key ?? null) === key) return this.host?.sup ?? null;
+    this.host?.sup.stop();
+    this.host = null;
+    if (!key) return null;
+    const sup = new HostSupervisor(this.ctx, cfg.supervisor!, { ...this.supOpts, mask: (s) => redact(s, this.vaultValues()), log: this.log });
+    if (this.send) sup.connected(this.send);
+    this.host = { key, sup };
+    return sup;
   }
 
   /** The hub connection opened (frames go out through `send`) or closed (null). */
   connected(send: ((frame: object) => boolean) | null): void {
     this.send = send;
+    (send ? this.supervisor() : this.host?.sup)?.connected(send);
     if (!send) return;
     const queued = this.outbox;
     this.outbox = [];
@@ -149,6 +176,8 @@ export class Daemon {
 
   /** One frame from the hub. */
   async onFrame(msg: unknown): Promise<void> {
+    const f = msg as HubFrame;
+    if (f && typeof f === "object" && (f.t === "host-ack" || f.t === "host-cursor")) return void this.supervisor()?.onFrame(f);
     const m = msg as HubRequest;
     if (!m || typeof m !== "object" || m.t !== "req" || typeof m.rid !== "string") return;
     const reply = (r: Omit<ReplyFrame, "t" | "rid">) => this.send?.({ t: "reply", rid: m.rid, ...r });
@@ -171,6 +200,18 @@ export class Daemon {
         return this.stop(m.task);
       case "sessions":
         return { running: await this.sessions() };
+      case "host.request":
+      case "host.followup":
+      case "host.answer":
+      case "host.status":
+      case "host.questions":
+      case "host.lookup":
+      case "host.context": {
+        this.enabled();
+        const sup = this.supervisor();
+        if (!sup) throw new Error(`no supervisor is set up on ${machineName()} (0b agent supervisor openclaw --agent <id> there)`);
+        return sup.request(m as HostOp);
+      }
       default:
         throw new Error(`unknown op ${(m as { op?: string }).op}`);
     }
@@ -180,7 +221,11 @@ export class Daemon {
   async onIpc(msg: Record<string, unknown>): Promise<unknown> {
     if (msg.op === "ping") return { ok: true };
     if (msg.op === "status")
-      return { connected: Boolean(this.send), tasks: [...this.tasks.values()].map((t) => ({ id: t.id, agent: t.agent, cwd: t.cwd, state: t.state, mode: t.mode })) };
+      return {
+        connected: Boolean(this.send),
+        tasks: [...this.tasks.values()].map((t) => ({ id: t.id, agent: t.agent, cwd: t.cwd, state: t.state, mode: t.mode })),
+        ...(this.host ? { supervisor: this.host.sup.status() } : {}),
+      };
     if (msg.op === "ask") {
       const ask = this.asks.get(String(msg.task));
       if (!ask) throw new Error("no such task here");
@@ -529,6 +574,8 @@ export class Daemon {
 
   /** Stop everything (the daemon is exiting). */
   async shutdown(): Promise<void> {
+    this.host?.sup.stop();
+    this.host = null;
     await Promise.all([...this.tasks.values()].map((t) => (t.run && ["starting", "running", "waiting"].includes(t.state) ? t.run.stop().catch(() => {}) : null)));
     if (this.adapters.codex instanceof CodexAdapter) this.adapters.codex.close();
   }

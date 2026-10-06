@@ -24,12 +24,12 @@ export const HOST_USAGE = `Usage
   0b host questions                   Questions waiting for you (--machine m)
   0b host updates [--cursor c]        New questions, completions, failures and progress since the
         [--wait s] [--kinds k,…]       cursor; the last line is the next cursor, for the next run
-                                       (--wait up to 20 s; kinds: question,completed,failed,progress)
+                                       (--wait up to 20 s; kinds: question,completed,failed,progress,notice)
   "-" as the text reads it from stdin. --json prints {ok, text, data} for scripts.`;
 
 const SUBS = ["request", "status", "followup", "answer", "questions", "updates"] as const;
 type Sub = (typeof SUBS)[number];
-const KINDS = ["question", "completed", "failed", "progress"];
+const KINDS = ["question", "completed", "failed", "progress", "notice"];
 
 /** One `0b host` command line as the tool call it makes. */
 export interface HostCall {

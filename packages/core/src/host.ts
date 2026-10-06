@@ -8,12 +8,19 @@
  * hub's sides and noted in the plan. Old daemons and old gateways ignore frames they don't know.
  */
 
-/** What a machine's hello says about its supervisor: never paths or flags. */
+/**
+ * What a machine's hello says about its supervisor: never paths or flags. `openclaw`: a request
+ * becomes a host-task task at once and goes to an OpenClaw agent. `ledger` (docs/plans/dots-host.md,
+ * "Ledger mode"): requests, follow-ups and answers are written into host-task's log the way the
+ * host's own desk writes the user's words (dev_request, user_followup, user_decision), and the
+ * team there gives a request its task id; `agent` is then "ledger".
+ */
 export interface HostSupervisorInfo {
-  kind: "openclaw";
+  kind: HostSupervisorKind;
   agent: string;
   label: string | null;
 }
+export type HostSupervisorKind = "openclaw" | "ledger";
 
 /** Public MCP event names (stable). */
 export const HOST_EVENT_NAMES = ["host.task.question", "host.task.completed", "host.task.failed"] as const;
@@ -53,12 +60,61 @@ export interface HostEvent {
   /** task_updated / task_completed / task_requested fields. */
   fields: Record<string, string> | null;
   dedupe: string | null;
-  /** question_required: herdr-watch (data.agent set) or emit. */
-  source: "herdr" | "worker" | null;
+  /**
+   * question_required: herdr-watch (data.agent set) or emit. A primary_handoff with a `[선택지]`
+   * block: "devlead" (the team asks the user; its options in `options`).
+   */
+  source: HostQuestionSource | null;
   /** data.pane / data.target */
   pane: string | null;
   /** answer_*: the question event id (parsed from data or dedupe). */
   question: number | null;
+  /** A devlead question's options, from its `[선택지]` block (parseChoices). */
+  options?: HostChoice[];
+}
+
+/** Where a question came from: herdr-watch saw the worker blocked, a worker emitted it, or the team (devlead) asks the user. */
+export type HostQuestionSource = "herdr" | "worker" | "devlead";
+
+/** One option of a question's `[선택지]` block: `A) 이름 — 결과 (추천: 이유)`. */
+export interface HostChoice {
+  /** The option's letter (or number), as written: "A". */
+  key: string;
+  label: string;
+  /** What choosing it does, as written after the dash; null when the line has none. */
+  detail: string | null;
+  /** The line says it's the recommended one ("(추천…"). */
+  recommended: boolean;
+}
+
+/**
+ * The options of a question the team asks the user (devlead's rule for primary_handoff: a line
+ * `[선택지]`, then one line per option, `A) <name> — <what happens> (추천: <why>)`), or [] when
+ * the text has no such block or fewer than two options. A line after the options that isn't one
+ * (a blank line, `기한: …`) ends the block.
+ */
+export function parseChoices(text: string | null | undefined): HostChoice[] {
+  if (typeof text !== "string") return [];
+  const lines = text.split(/\r?\n/);
+  const start = lines.findIndex((l) => l.trim() === "[선택지]");
+  if (start < 0) return [];
+  const out: HostChoice[] = [];
+  for (const line of lines.slice(start + 1)) {
+    const m = /^\s*([A-Za-z0-9]{1,2})[).]\s*(\S.*?)\s*$/.exec(line);
+    if (!m) {
+      if (!out.length && !line.trim()) continue;
+      break;
+    }
+    const key = m[1]!;
+    const body = m[2]!;
+    const dash = /\s[—–-]\s/.exec(body);
+    const label = (dash ? body.slice(0, dash.index) : body).trim().slice(0, 200);
+    const detail = dash ? body.slice(dash.index + dash[0].length).trim().slice(0, 1000) || null : null;
+    if (!label || out.some((o) => o.key.toLowerCase() === key.toLowerCase())) break;
+    out.push({ key, label, detail, recommended: /\((?:추천|recommended)/i.test(body) });
+    if (out.length >= 10) break;
+  }
+  return out.length >= 2 ? out : [];
 }
 
 /** An event's text, at most (characters). */
@@ -125,20 +181,39 @@ export interface HostProvider {
 /** Hub → daemon requests (inside the existing {t:"req", rid, op, …} envelope). */
 export type HostOp =
   | { op: "host.request"; requestId: string; text: string; title: string; project?: string; repo?: string; worker?: string; priority?: string; via?: HostVia }
-  | { op: "host.followup"; requestId: string; task: string; text: string; via?: HostVia }
-  /** ack: the answer's acknowledgement key if it goes to the supervisor (HOST_ACK_KEY: `ha_<question>:<nonce>`). */
-  | { op: "host.answer"; question: number; text: string; via?: HostVia; ack?: string }
+  /** Ledger mode also takes `request` (hr_…): with no task, a follow-up to a request the team hasn't given a task id yet. */
+  | { op: "host.followup"; requestId: string; task?: string; request?: string; text: string; via?: HostVia }
+  /**
+   * ack: the answer's acknowledgement key if it goes to the supervisor (HOST_ACK_KEY: `ha_<question>:<nonce>`).
+   * choice: ledger mode, the option the user picked (its key in the question's `[선택지]`).
+   */
+  | { op: "host.answer"; question: number; text: string; via?: HostVia; ack?: string; choice?: string }
   | { op: "host.status"; task?: string; project?: string; limit?: number }
   | { op: "host.questions" }
-  /** An existing task or question the hub hasn't seen (made outside 0bridge): does this machine have it? */
-  | { op: "host.lookup"; task?: string; question?: number }
+  /** An existing task or question the hub hasn't seen (made outside 0bridge): does this machine have it? Ledger mode: a request's task, by its id. */
+  | { op: "host.lookup"; task?: string; question?: number; request?: string }
   /** Outside context for a task's existing worker, through the supervisor (docs/plans/dots-host.md, "Outside context"). */
   | { op: "host.context"; id: string; task: string; dedupe: string; provider: HostProvider; text: string; ack?: string };
 
 export interface HostLookupReply {
   task: HostTask | null;
-  question: { question: number; task: string; text: string | null; askedAt: number | null; source: "herdr" | "worker" } | null;
+  question: { question: number; task: string; text: string | null; askedAt: number | null; source: HostQuestionSource } | null;
+  /** Asked with `request` (ledger mode): that request as this machine has it, null when it doesn't. */
+  request?: HostLedgerReceipt | null;
 }
+
+/**
+ * Ledger mode (docs/plans/dots-host.md, "Ledger mode"): a request as the machine has it, a
+ * dev_request in host-task's log (`event`), and once the team made a task for it (a later event
+ * on a task names the request id), that task.
+ */
+export interface HostLedgerReceipt {
+  requestId: string;
+  event: number | null;
+  task: string | null;
+}
+/** A request id the hub makes (hr_ + 10 base32); the daemon takes 4 to 40 letters and digits. */
+export const HOST_REQUEST_ID = /^hr_[A-Za-z0-9]{4,40}$/;
 
 /**
  * An outside-context item's dedupe key, the same on the hub and the daemon: `<provider>:<board>:<action>`,
@@ -186,15 +261,24 @@ export interface HostContextReply {
   pane?: string;
 }
 
+/** dispatch recorded: ledger mode, written into host-task's log for the team (no task made, nothing sent to an agent). */
 export interface HostRequestReply {
-  task: HostTask;
-  dispatch: "queued" | "duplicate";
+  /** null in ledger mode until the team gives the request a task. */
+  task: HostTask | null;
+  dispatch: "queued" | "duplicate" | "recorded";
+  /** Ledger mode: where the request is in host-task. */
+  receipt?: HostLedgerReceipt;
 }
 export interface HostFollowupReply {
-  task: string;
-  dispatch: "queued" | "duplicate";
+  /** null in ledger mode for a follow-up to a request with no task id yet. */
+  task: string | null;
+  dispatch: "queued" | "duplicate" | "recorded";
+  /** Ledger mode: the user_followup event, and the request it's about. */
+  event?: number | null;
+  request?: string | null;
 }
-export type HostAnswerStatus = "delivered" | "pending" | "forwarded" | "refused";
+/** recorded: ledger mode, the answer is in host-task's log as the user's decision on the task. */
+export type HostAnswerStatus = "delivered" | "pending" | "forwarded" | "refused" | "recorded";
 export interface HostAnswerReply {
   question: number;
   task: string | null;
@@ -206,6 +290,8 @@ export interface HostAnswerReply {
   confirmation?: { from: string; to: string; event: number | null };
   /** refused because a newer question is current: its id. */
   current?: number | null;
+  /** recorded: the user_decision event. */
+  event?: number | null;
 }
 export interface HostStatusReply {
   tasks: HostTask[];
@@ -223,7 +309,9 @@ export interface HostQuestionData {
   project: string | null;
   worker: string | null;
   question: string;
-  source: "herdr" | "worker";
+  source: HostQuestionSource;
+  /** A devlead question's options ([] for a worker's). */
+  options: HostChoice[];
   askedAt: string;
 }
 export interface HostCompletedData {

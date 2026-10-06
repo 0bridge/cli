@@ -14,7 +14,7 @@ import type { AgentAdapter, AgentEvent, Run } from "./adapters/types.ts";
 import { ipcPath, serveIpc } from "./ipc.ts";
 import { logEvent, logMeta, readTask } from "./log.ts";
 import { PERM_WAIT_MS, removeTaskFile, writeTaskFile } from "./perm-mcp.ts";
-import { AGENT_IDS, clampMode, denyRules, loadAgentConfig, profileEnv, repoFor, saveAgentConfig, withUseProfiles, type AgentConfig, type AgentId, type Mode, type RepoPolicy } from "./policy.ts";
+import { AGENT_IDS, clampMode, denyRules, loadAgentConfig, profileEnv, repoFor, saveAgentConfig, supervisorInfo, withUseProfiles, type AgentConfig, type AgentId, type Mode, type RepoPolicy } from "./policy.ts";
 import { installService } from "../service.ts";
 import { vaultValues } from "../vault.ts";
 import { HostSupervisor, type SupervisorOptions } from "./supervisor.ts";
@@ -146,7 +146,7 @@ export class Daemon {
       repos: cfg.enabled ? cfg.repos.map((r) => ({ root: r.root, repo: repoName(r.root), agents: (r.agents ?? usable).filter((a) => usable.includes(a)), mode: r.mode, worktree: r.worktree })) : [],
       ...(Object.keys(profiles).length ? { profiles } : {}),
       // Only who it is: never paths or flags.
-      ...(cfg.enabled && cfg.supervisor ? { host: { kind: cfg.supervisor.kind, agent: cfg.supervisor.agent, label: cfg.supervisor.label } } : {}),
+      ...(cfg.enabled && cfg.supervisor ? { host: supervisorInfo(cfg.supervisor) } : {}),
     };
   }
 
@@ -209,7 +209,7 @@ export class Daemon {
       case "host.context": {
         this.enabled();
         const sup = this.supervisor();
-        if (!sup) throw new Error(`no supervisor is set up on ${machineName()} (0b agent supervisor openclaw --agent <id> there)`);
+        if (!sup) throw new Error(`no supervisor is set up on ${machineName()} (0b agent supervisor ledger, or openclaw --agent <id>, there)`);
         return sup.request(m as HostOp);
       }
       default:

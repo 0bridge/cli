@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
+import { resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { CloudError, type Context } from "@0bridge/core";
 import { cloudClient } from "../cloud.ts";
@@ -9,8 +10,8 @@ import { Daemon, machineName, runDaemon } from "./daemon.ts";
 import { ipcPath, ipcRequest } from "./ipc.ts";
 import { listTasks, readTask } from "./log.ts";
 import { guard, permMcp } from "./perm-mcp.ts";
-import { runAgent } from "./adapters/spawn.ts";
-import { DEFAULT_DENY, MODES, SUPERVISOR_AGENT, loadAgentConfig, realPath, saveAgentConfig, tooBroad, type Mode } from "./policy.ts";
+import { runAgent, which } from "./adapters/spawn.ts";
+import { DEFAULT_DENY, MODES, SUPERVISOR_AGENT, loadAgentConfig, realPath, saveAgentConfig, supervisorTitle, tooBroad, type Mode } from "./policy.ts";
 import { readSupervisorState } from "./supervisor.ts";
 
 /**
@@ -38,8 +39,8 @@ function fail(msg: string): never {
   process.exit(1);
 }
 
-const USAGE = `usage: 0b agent on [path] [--mode plan|edit|auto] | off | status | allow <path> [--mode m] | deny <path> | run | log [task] | supervisor openclaw --agent <id> | supervisor off | supervisor status`;
-const SUPERVISOR_USAGE = "usage: 0b agent supervisor openclaw --agent <id> [--label <name>] [--host-task <bin>] [--openclaw <bin>] [--herdr <bin>] | supervisor off | supervisor status";
+const USAGE = `usage: 0b agent on [path] [--mode plan|edit|auto] | off | status | allow <path> [--mode m] | deny <path> | run | log [task] | supervisor ledger | supervisor openclaw --agent <id> | supervisor off | supervisor status`;
+const SUPERVISOR_USAGE = "usage: 0b agent supervisor ledger [--label <name>] [--host-task <path>] | supervisor openclaw --agent <id> [--label <name>] [--host-task <bin>] [--openclaw <bin>] [--herdr <bin>] | supervisor off | supervisor status";
 
 async function confirm(q: string): Promise<boolean> {
   if (!process.stdin.isTTY) return false;
@@ -179,7 +180,7 @@ async function status(ctx: Context): Promise<void> {
   for (const t of live?.tasks.filter((t) => ["starting", "running", "waiting"].includes(t.state)) ?? []) console.log(`  ${c.cyan(t.id)} ${t.agent} ${t.state} ${c.dim(t.cwd)}`);
   const sup = cfg.supervisor;
   console.log(
-    `\n${c.bold("Supervisor")}  ${sup ? `openclaw/${sup.agent}${sup.label ? ` (${sup.label})` : ""}${c.dim(`, host-task cursor ${readSupervisorState(ctx).cursor ?? "not set yet"}`)}` : c.dim("none: 0b agent supervisor openclaw --agent <id>")}`,
+    `\n${c.bold("Supervisor")}  ${sup ? `${supervisorTitle(sup)}${c.dim(`, host-task cursor ${readSupervisorState(ctx).cursor ?? "not set yet"}`)}` : c.dim(`none: ${SETUP}`)}`,
   );
 }
 
@@ -199,35 +200,34 @@ function supervisor(ctx: Context, args: string[], opts: AgentOptions): void {
   }
   if (what === "status" || what === undefined) {
     const s = cfg.supervisor;
-    if (!s) return console.log(c.dim("No supervisor is set up on this machine: 0b agent supervisor openclaw --agent <id>"));
+    if (!s) return console.log(c.dim(`No supervisor is set up on this machine: ${SETUP}`));
     const st = readSupervisorState(ctx);
-    console.log(`${c.bold("Supervisor")}  openclaw/${s.agent}${s.label ? ` (${s.label})` : ""}${cfg.enabled ? "" : c.yellow("  (agent control is off here: 0b agent on)")}`);
-    console.log(`  host-task: ${s.hostTask}  openclaw: ${s.openclaw}  herdr: ${s.herdr}`);
+    console.log(`${c.bold("Supervisor")}  ${supervisorTitle(s)}${cfg.enabled ? "" : c.yellow("  (agent control is off here: 0b agent on)")}`);
+    console.log(`  kind: ${s.kind}${s.kind === "ledger" ? c.dim(" (requests go into host-task's log as dev_request; the team gives them task ids)") : ""}`);
+    console.log(s.kind === "openclaw" ? `  host-task: ${s.hostTask}  openclaw: ${s.openclaw}  herdr: ${s.herdr}` : `  host-task: ${s.hostTask}`);
     console.log(`  cursor: ${st.cursor ?? c.dim("not set yet (starts at the end of host-task's log)")}`);
-    console.log(`  queued for ${s.agent}: ${st.queue.length}${st.queue.length ? c.dim(` (${st.queue.map((d) => `${d.id} → ${d.task}${d.attempts ? `, ${d.attempts} failed` : ""}`).join("; ")})`) : ""}`);
+    if (s.kind === "openclaw")
+      console.log(`  queued for ${s.agent}: ${st.queue.length}${st.queue.length ? c.dim(` (${st.queue.map((d) => `${d.id} → ${d.task}${d.attempts ? `, ${d.attempts} failed` : ""}`).join("; ")})`) : ""}`);
+    else {
+      const all = Object.values(st.ledger);
+      const waiting = all.filter((r) => !r.task);
+      console.log(`  requests recorded: ${all.length}, waiting for a task id: ${waiting.length}${waiting.length ? c.dim(` (${waiting.slice(-5).map((r) => `${r.id} → dev_request #${r.event ?? "?"}`).join("; ")})`) : ""}`);
+    }
     if (st.lastError) console.log(`  last error: ${c.yellow(st.lastError.text)} ${c.dim(new Date(st.lastError.at).toISOString().slice(0, 16).replace("T", " "))}`);
     return;
   }
+  if (what === "ledger") return ledger(ctx, cfg, opts);
   if (what !== "openclaw") fail(SUPERVISOR_USAGE);
-  const agent = opts.agent ?? cfg.supervisor?.agent;
+  const prev = cfg.supervisor?.kind === "openclaw" ? cfg.supervisor : undefined;
+  const agent = opts.agent ?? prev?.agent;
   if (!agent || !SUPERVISOR_AGENT.test(agent)) fail(`--agent is the OpenClaw agent's id (lead, …). ${SUPERVISOR_USAGE}`);
-  const bins = { hostTask: opts.hostTask ?? cfg.supervisor?.hostTask ?? "host-task", openclaw: opts.openclaw ?? cfg.supervisor?.openclaw ?? "openclaw", herdr: opts.herdr ?? cfg.supervisor?.herdr ?? "herdr" };
-  for (const [name, bin, args] of [
-    ["host-task", bins.hostTask, ["--help"]],
-    ["openclaw", bins.openclaw, ["--version"]],
-    ["herdr", bins.herdr, ["--version"]],
-  ] as const) {
-    if (bin.startsWith("-")) fail(`${name}: ${bin} isn't a program`);
-    const r = runAgent(bin, [...args], { timeout: 20_000 });
-    if (r.code !== 0) fail(`${name} (${bin}) doesn't run here${r.err.trim() ? `: ${r.err.trim().split("\n").at(-1)}` : ""}`);
-  }
-  // host-task's event log must read as JSON: that's what the daemon follows.
-  const ev = runAgent(bins.hostTask, ["events", "--since=0", "--limit=1"], { timeout: 20_000 });
-  let readable = false;
-  try {
-    readable = ev.code === 0 && Array.isArray((JSON.parse(ev.out) as { events?: unknown }).events);
-  } catch {}
-  if (!readable) fail(`host-task events didn't answer as expected${ev.err.trim() ? ` (${ev.err.trim().split("\n").at(-1)})` : ""}`);
+  // Absolute paths, found now on this shell's PATH: the service that runs the daemon may not have the same PATH.
+  const bins = {
+    hostTask: program("host-task", opts.hostTask ?? cfg.supervisor?.hostTask ?? "host-task", ["--help"]),
+    openclaw: program("openclaw", opts.openclaw ?? prev?.openclaw ?? "openclaw", ["--version"]),
+    herdr: program("herdr", opts.herdr ?? prev?.herdr ?? "herdr", ["--version"]),
+  };
+  checkEvents(bins.hostTask);
   const list = runAgent(bins.openclaw, ["agents", "list", "--json"], { timeout: 30_000 });
   let known = false;
   try {
@@ -235,14 +235,58 @@ function supervisor(ctx: Context, args: string[], opts: AgentOptions): void {
     const arr = Array.isArray(all) ? all : ((all as { agents?: unknown[] })?.agents ?? []);
     known = arr.some((a) => (typeof a === "string" ? a : (a as { id?: string; agentId?: string })?.id ?? (a as { agentId?: string })?.agentId) === agent);
   } catch {}
-  const label = opts.label?.trim() || cfg.supervisor?.label || null;
-  cfg.supervisor = { kind: "openclaw", agent, label, ...bins, pollMs: cfg.supervisor?.pollMs ?? 3000, maxDispatch: cfg.supervisor?.maxDispatch ?? 2 };
+  const label = opts.label?.trim() || prev?.label || null;
+  cfg.supervisor = { kind: "openclaw", agent, label, ...bins, pollMs: cfg.supervisor?.pollMs ?? 3000, maxDispatch: prev?.maxDispatch ?? 2 };
   saveAgentConfig(ctx, cfg);
   console.log(`${c.green("✓")} Host work your AI apps request through 0bridge goes to OpenClaw's ${c.bold(agent)}${label ? ` (${label})` : ""} on ${machineName()}.`);
   if (!known) console.log(c.yellow(`  openclaw agents list doesn't show an agent "${agent}"; check the id (it's saved anyway).`));
   console.log(c.dim(`  Each task gets its own ${agent} session (0bridge-t-…); replies stay in OpenClaw and host-task, nothing is posted to Slack or any channel.`));
   console.log(c.dim(`  ${agent} decides where and how the work runs: the repos and modes allowed with 0b agent allow apply to agents 0bridge starts itself, not to host work.`));
   if (!cfg.enabled) console.log(c.yellow(`  Agent control is off on this machine, so nothing reaches it yet: 0b agent on`));
+}
+
+/**
+ * `0b agent supervisor ledger` (docs/plans/dots-host.md, "Ledger mode"): what the user tells an AI
+ * app through 0bridge goes into host-task's log the way the host's desk records it (dev_request,
+ * user_followup, user_decision); the team there makes the task. Only host-task is needed.
+ */
+function ledger(ctx: Context, cfg: ReturnType<typeof loadAgentConfig>, opts: AgentOptions): void {
+  const hostTask = program("host-task", opts.hostTask ?? cfg.supervisor?.hostTask ?? "host-task", ["--help"]);
+  checkEvents(hostTask);
+  const label = opts.label?.trim() || (cfg.supervisor?.kind === "ledger" ? cfg.supervisor.label : null) || null;
+  cfg.supervisor = { kind: "ledger", label, hostTask, pollMs: cfg.supervisor?.pollMs ?? 3000 };
+  saveAgentConfig(ctx, cfg);
+  console.log(`${c.green("✓")} What you tell your AI apps for ${machineName()} goes into its work ledger (host-task)${label ? `, for ${c.bold(label)}` : ""}.`);
+  console.log(c.dim(`  A request is a dev_request (the team gives it a task id), a follow-up a user_followup, an answer a user_decision, each with the user's words and where they came from.`));
+  console.log(c.dim(`  0bridge makes no task, runs no agent and types into no pane here. The team's questions ([선택지]) and results come back to the apps.`));
+  console.log(c.dim(`  host-task: ${hostTask}`));
+  if (!cfg.enabled) console.log(c.yellow(`  Agent control is off on this machine, so nothing reaches it yet: 0b agent on`));
+}
+
+const SETUP = "0b agent supervisor ledger, or 0b agent supervisor openclaw --agent <id>";
+
+/**
+ * A program the supervisor runs, checked (it answers `args`) and saved as its absolute path: the
+ * daemon runs as a service (systemd, launchd) whose PATH may not have ~/.local/bin, where host-task lives.
+ */
+function program(name: string, bin: string, args: string[]): string {
+  if (!bin.trim() || bin.startsWith("-")) fail(`${name}: ${bin} isn't a program`);
+  const found = which(bin);
+  if (!found) fail(`${name} (${bin}) doesn't run here: not found${bin.includes("/") || bin.includes("\\") ? "" : ` (not on PATH; pass --${name} <path>)`}`);
+  const abs = resolve(found);
+  const r = runAgent(abs, args, { timeout: 20_000 });
+  if (r.code !== 0) fail(`${name} (${abs}) doesn't run here${r.err.trim() ? `: ${r.err.trim().split("\n").at(-1)}` : ""}`);
+  return abs;
+}
+
+/** host-task's event log must read as JSON: that's what the daemon follows. */
+function checkEvents(hostTask: string): void {
+  const ev = runAgent(hostTask, ["events", "--since=0", "--limit=1"], { timeout: 20_000 });
+  let readable = false;
+  try {
+    readable = ev.code === 0 && Array.isArray((JSON.parse(ev.out) as { events?: unknown }).events);
+  } catch {}
+  if (!readable) fail(`host-task events didn't answer as expected${ev.err.trim() ? ` (${ev.err.trim().split("\n").at(-1)})` : ""}`);
 }
 
 function log(ctx: Context, task?: string): void {

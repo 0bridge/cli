@@ -174,7 +174,9 @@ ${c.bold("Usage")}
   0b agent on|off|status       Let your AI apps start and steer coding agents on this machine
   0b agent allow|deny <path>   Repos agents may work in (nothing is allowed until you add one)
   0b agent log [task]          What tasks on this machine did (agent run: the daemon itself)
-  0b agent supervisor openclaw --agent <id>   Host work your AI apps request (Dots, ChatGPT, Claude) goes to
+  0b agent supervisor ledger   What you tell your AI apps (Dots, ChatGPT, Claude) for this machine goes into
+        [--label <name>]        its work ledger (host-task) as dev_request, user_followup, user_decision (off, status)
+  0b agent supervisor openclaw --agent <id>   Host work your AI apps request goes to
         [--label <name>]        that OpenClaw agent here, one session per host-task task (off, status)
   0b sessions                  What your coding sessions are doing now, on every machine and in the cloud
         [--state needs-you]     (--machine m, --repo r); watch: refresh every 5 s

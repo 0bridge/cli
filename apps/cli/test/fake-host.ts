@@ -74,6 +74,7 @@ const argv = process.argv.slice(2);
 
 const HOST_TASK = String.raw`
 const DB = DIR + "/host-task.json";
+fs.appendFileSync(DIR + "/host-task-calls.jsonl", JSON.stringify(argv) + "\n");
 const pos = [], opt = {};
 for (let i = 1; i < argv.length; i++) {
   const a = argv[i];
@@ -296,6 +297,10 @@ export function fakeHost(dir: string, o: { panes?: FakePane[]; openclaw?: { slee
         return id;
       });
     },
+    /** Any event with the data given, as host-task's own commands write them (task_contract_recorded's contract, …). */
+    event(kind: string, task: string | null, data: Record<string, unknown>, dedupe: string | null = null): number | null {
+      return changeDb((db) => addEvent(db, kind, task, data, dedupe));
+    },
     /** host-task set (status=completed needs evidence). */
     set(task: string, fields: Record<string, string>): void {
       changeDb((db) => {
@@ -379,6 +384,8 @@ export function fakeHost(dir: string, o: { panes?: FakePane[]; openclaw?: { slee
         else panes.push({ pane: id, name: "", status: "idle", ...patch });
       });
     },
+    /** Every host-task command line the daemon ran (its subcommand first). */
+    hostTaskCalls: (): string[][] => readLines(join(dir, "host-task-calls.jsonl")).map((l) => JSON.parse(l) as string[]),
     herdrCalls: (): string[][] => {
       const f = join(dir, "herdr-calls.jsonl");
       return existsSync(f) ? readFileSync(f, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];

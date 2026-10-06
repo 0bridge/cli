@@ -187,6 +187,12 @@ describe("agent daemon", () => {
     await s.daemon.onFrame({ t: "host-ack", cursor: f.cursor });
     expect(readSupervisorState(s.ctx).cursor).toBe(f.cursor);
     expect((s.daemon as any).host.sup.status()).toMatchObject({ agent: "lead", cursor: f.cursor });
+    // Ledger mode (the supervisor changed in agent.json): the hello says so, a request is a dev_request and makes no task.
+    saveAgentConfig(s.ctx, { enabled: true, repos: [], supervisor: { kind: "ledger", label: "devlead", hostTask: host.bins.hostTask, pollMs: 30 } });
+    expect((await s.daemon.hello()).host).toEqual({ kind: "ledger", agent: "ledger", label: "devlead" });
+    const l = (await s.req({ op: "host.request", requestId: "hr_daemon0002", text: "Tidy the docs", title: "docs" })) as { task: null; dispatch: string; receipt: { event: number } };
+    expect([l.task, l.dispatch, host.events("dev_request").map((e) => e.id)]).toEqual([null, "recorded", [l.receipt.event]]);
+    expect(Object.keys(host.db().tasks)).toEqual(["T-001"]);
     // Agent control off: no host in the hello, and host requests are refused.
     saveAgentConfig(s.ctx, { enabled: false, repos: [], supervisor });
     expect((await s.daemon.hello()).host).toBeUndefined();

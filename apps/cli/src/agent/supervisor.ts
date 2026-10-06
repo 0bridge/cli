@@ -5,14 +5,17 @@ import { readJson, writeAtomic, type Context } from "@0bridge/core";
 import type { ChildProcess } from "node:child_process";
 import { kill, runAgentAsync } from "./adapters/spawn.ts";
 import { AnswerDelivery, HerdrClient, PANE, argText, provenanceText, runTracked, type AnswerRecord, type AnswerStep, type AnswerTimings, type HerdrAgent } from "./host-answer.ts";
-import type { SupervisorConfig } from "./policy.ts";
+import { LedgerMode, type LedgerAnswer, type LedgerFollowup, type LedgerRequest } from "./ledger.ts";
+import type { OpenclawSupervisorConfig, SupervisorConfig } from "./policy.ts";
 import {
   HOST_BATCH_MAX,
   HOST_CONTEXT_KEY,
+  HOST_REQUEST_ID,
   HOST_RESET_ID,
   HOST_TEXT_MAX,
   isHostAck,
   newHostAck,
+  parseChoices,
   type HostAckFrame,
   type HostContextReply,
   type HostCursorFrame,
@@ -169,8 +172,21 @@ export class HostTaskClient {
   events(since: number, limit: number): Promise<{ events: RawHostEvent[]; cursor: number }> {
     return this.run(["events", `--since=${Math.max(0, Math.floor(since))}`, `--limit=${limit}`]);
   }
-  emit(task: string, kind: string, text: string, dedupe: string): Promise<{ event: number | null }> {
-    return this.run(["emit", `--task=${task}`, `--kind=${kind}`, `--text=${argText(text)}`, `--dedupe=${dedupe}`]);
+  /** `task` null: an event on no task (a dev_request, a follow-up to a request with no task yet). */
+  emit(task: string | null, kind: string, text: string, dedupe: string): Promise<{ event: number | null }> {
+    return this.run(["emit", ...(task ? [`--task=${task}`] : []), `--kind=${kind}`, `--text=${argText(text)}`, `--dedupe=${dedupe}`]);
+  }
+  /** The event recorded under `dedupe`, looked for after `since` (host-task's emit says null for a repeated key); null when there's none. */
+  async findByDedupe(dedupe: string, since = 0): Promise<number | null> {
+    let at = Math.max(0, Math.floor(since));
+    for (let i = 0; i < 50; i++) {
+      const page = await this.events(at, 1000);
+      const hit = page.events.find((e) => e.dedupe === dedupe);
+      if (hit) return hit.id;
+      if (page.events.length < 1000) return null;
+      at = page.events.at(-1)!.id;
+    }
+    return null;
   }
   answer(question: number, text: string): Promise<{ event: number | null }> {
     return this.run(["answer", String(question), `--text=${argText(text)}`]);
@@ -231,6 +247,8 @@ export function parseHostEvent(raw: unknown, mask: (s: string) => string = (s) =
       )
     : null;
   const question = e.kind.startsWith("answer") ? (int(d.question_event) ?? int(/:(\d+)$/.exec(e.dedupe ?? "")?.[1])) : null;
+  // The team's message to the user (devlead's primary_handoff): a question when it lists options.
+  const options = e.kind === "primary_handoff" && typeof d.text === "string" ? parseChoices(mask(d.text)) : [];
   return {
     id: e.id,
     at: Math.round(Number(e.at) * 1000) || 0,
@@ -239,9 +257,10 @@ export function parseHostEvent(raw: unknown, mask: (s: string) => string = (s) =
     text: typeof d.text === "string" ? cap(d.text, mask) : null,
     fields,
     dedupe: str(e.dedupe),
-    source: e.kind === "question_required" ? (str(d.agent) ? "herdr" : "worker") : null,
+    source: e.kind === "question_required" ? (str(d.agent) ? "herdr" : "worker") : options.length ? "devlead" : null,
     pane: str(d.pane) ?? str(d.target),
     question,
+    ...(options.length ? { options } : {}),
   };
 }
 
@@ -341,6 +360,12 @@ export interface SupervisorState {
   answerAcks: Record<string, string>;
   queue: Dispatch[];
   lastError: { at: number; text: string } | null;
+  /** Ledger mode (ledger.ts): requests recorded as dev_request, by request id (hr_…). */
+  ledger: Record<string, LedgerRequest>;
+  /** Ledger mode: follow-ups recorded as user_followup, by id (hf_…). */
+  ledgerFollowups: Record<string, LedgerFollowup>;
+  /** Ledger mode: answers recorded as user_decision, by question id. */
+  ledgerAnswers: Record<string, LedgerAnswer>;
 }
 
 export const supervisorStatePath = (ctx: Context) => join(ctx.storeDir, "agent", "host-supervisor.json");
@@ -365,6 +390,15 @@ export function readSupervisorState(ctx: Context): SupervisorState {
     answerAcks: Object.fromEntries(Object.entries(obj<string>(s?.answerAcks)).filter(([q, a]) => isHostAck(`ha_${q}`, a))),
     queue: Array.isArray(s?.queue) ? s.queue.filter((d) => d && typeof d.id === "string" && HOST_TASK_ID.test(d.task) && typeof d.file === "string") : [],
     lastError: s?.lastError ?? null,
+    ledger: Object.fromEntries(
+      Object.entries(obj<LedgerRequest>(s?.ledger)).filter(([k, r]) => r && r.id === k && HOST_REQUEST_ID.test(k) && typeof r.text === "string" && typeof r.at === "number" && (r.task === null || HOST_TASK_ID.test(r.task ?? ""))),
+    ),
+    ledgerFollowups: Object.fromEntries(
+      Object.entries(obj<LedgerFollowup>(s?.ledgerFollowups)).filter(([k, f]) => f && f.id === k && REQUEST_ID.test(k) && typeof f.text === "string" && typeof f.at === "number" && (f.task === null || HOST_TASK_ID.test(f.task ?? "")) && (f.task !== null || f.request !== null)),
+    ),
+    ledgerAnswers: Object.fromEntries(
+      Object.entries(obj<LedgerAnswer>(s?.ledgerAnswers)).filter(([k, a]) => a && String(a.question) === k && HOST_TASK_ID.test(a.task ?? "") && typeof a.text === "string" && typeof a.at === "number"),
+    ),
     ...(typeof s?.reset === "string" && HOST_RESET_ID.test(s.reset) ? { reset: s.reset } : (s?.reset as unknown) === true ? { reset: newResetId() } : {}),
   };
 }
@@ -377,6 +411,13 @@ const trim = <T>(r: Record<string, T>) => {
   const keys = Object.keys(r);
   return keys.length <= KEEP ? r : Object.fromEntries(keys.slice(-KEEP).map((k) => [k, r[k]!]));
 };
+/** The newest KEEP, and every one host-task doesn't have yet (it's still to be written). */
+const trimRecorded = <T extends { event: number | null }>(r: Record<string, T>) => {
+  const keys = Object.keys(r);
+  if (keys.length <= KEEP) return r;
+  const keep = new Set(keys.slice(-KEEP));
+  return Object.fromEntries(keys.filter((k) => keep.has(k) || r[k]!.event === null).map((k) => [k, r[k]!]));
+};
 
 // ── Supervisor ─────────────
 
@@ -385,7 +426,7 @@ const trim = <T>(r: Record<string, T>) => {
  * from a file. There's no way to add --deliver, --channel or --reply-*: replies stay in OpenClaw's
  * session and come back here as its JSON output.
  */
-export function openclawArgs(cfg: Pick<SupervisorConfig, "agent">, task: string, file: string): string[] {
+export function openclawArgs(cfg: Pick<OpenclawSupervisorConfig, "agent">, task: string, file: string): string[] {
   return ["agent", "--agent", cfg.agent, "--session-key", sessionKey(task), "--message-file", file, "--json", "--timeout", String(OPENCLAW_TIMEOUT_S)];
 }
 
@@ -475,6 +516,10 @@ export class HostSupervisor {
   private contextRound: Promise<void> | null = null;
   /** Incoming requests and follow-ups being taken now (a retry of one waits for it). */
   private taking = new Map<string, Promise<HostTask | null>>();
+  /** The OpenClaw supervisor's settings; null in ledger mode. */
+  private oc: OpenclawSupervisorConfig | null;
+  /** Ledger mode (ledger.ts): requests, follow-ups and answers go into host-task's log, nothing to an agent. */
+  readonly ledger: LedgerMode | null;
 
   constructor(
     readonly ctx: Context,
@@ -489,8 +534,10 @@ export class HostSupervisor {
     this.contextRetryMs = opts.contextRetryMs ?? CONTEXT_RETRY_MS;
     this.contextRetryMaxMs = opts.contextRetryMaxMs ?? Math.max(this.contextRetryMs, CONTEXT_RETRY_MAX_MS * (this.contextRetryMs / CONTEXT_RETRY_MS));
     this.contextMaxAgeMs = opts.contextMaxAgeMs ?? CONTEXT_MAX_AGE_MS;
+    this.oc = cfg.kind === "openclaw" ? cfg : null;
     this.host = new HostTaskClient(cfg.hostTask, opts.hostTaskEnv);
-    this.herdr = new HerdrClient(cfg.herdr);
+    // Ledger mode never runs herdr (nothing is typed anywhere): the client is there unused.
+    this.herdr = new HerdrClient(this.oc?.herdr ?? "herdr");
     this.state = readSupervisorState(ctx);
     this.answers = new AnswerDelivery({
       host: this.host,
@@ -504,27 +551,58 @@ export class HostSupervisor {
         all: () => Object.keys(this.state.answers).map(Number),
       },
       forward: (task, question, text, reason, queued) => this.forwardAnswer(task, question, text, reason, queued),
-      supervisor: this.cfg.label ?? this.cfg.agent,
+      supervisor: this.cfg.label ?? this.oc?.agent ?? "ledger",
       mask: this.mask,
       log: (l) => this.log(l),
       step: (at) => this.seam?.(at, this),
       timings: opts.answer,
     });
+    this.ledger =
+      cfg.kind === "ledger"
+        ? new LedgerMode({
+            host: this.host,
+            state: () => this.state,
+            save: () => this.save(),
+            mask: this.mask,
+            log: (l) => this.log(l),
+            error: (t) => this.error(t),
+            logEnd: async () => this.state.cursor ?? (await this.endOfLog()),
+            stopped: () => this.stopped,
+            retryMs: this.retryMs,
+          })
+        : null;
     this.timer = setInterval(() => void this.tick(), cfg.pollMs);
     this.timer.unref?.();
-    this.answers.resume();
+    if (!this.ledger) this.answers.resume();
     setTimeout(() => {
+      this.ledger?.retry();
       this.recover();
       this.pump();
     }, 0).unref?.();
   }
 
+  /** The OpenClaw supervisor's settings (never asked for in ledger mode, where nothing goes to an agent). */
+  private get lead(): OpenclawSupervisorConfig {
+    if (!this.oc) throw new Error("ledger mode sends nothing to an OpenClaw agent");
+    return this.oc;
+  }
+
   info(): HostSupervisorInfo {
-    return { kind: "openclaw", agent: this.cfg.agent, label: this.cfg.label };
+    return { kind: this.cfg.kind, agent: this.oc?.agent ?? "ledger", label: this.cfg.label };
   }
 
   status() {
-    return { agent: this.cfg.agent, label: this.cfg.label, cursor: this.state.cursor, queued: this.state.queue.length, dispatching: this.dispatching.size, lastError: this.state.lastError, resumed: this.resumed };
+    return {
+      kind: this.cfg.kind,
+      agent: this.oc?.agent ?? null,
+      label: this.cfg.label,
+      cursor: this.state.cursor,
+      queued: this.state.queue.length,
+      dispatching: this.dispatching.size,
+      lastError: this.state.lastError,
+      resumed: this.resumed,
+      ...(this.ledger ? { ledger: this.ledger.status() } : {}),
+    };
   }
 
   save(): void {
@@ -534,6 +612,9 @@ export class HostSupervisor {
     this.state.followups = trim(this.state.followups);
     this.state.answers = trim(this.state.answers);
     this.state.answerAcks = trim(this.state.answerAcks);
+    this.state.ledger = trimRecorded(this.state.ledger);
+    this.state.ledgerFollowups = trimRecorded(this.state.ledgerFollowups);
+    this.state.ledgerAnswers = trimRecorded(this.state.ledgerAnswers);
     // Settled context items go after a while (the hub keeps their dedupe), and first when there are
     // too many; one still on its way is never dropped (its dedupe must hold).
     const old = Date.now() - CONTEXT_KEEP_MS;
@@ -640,6 +721,7 @@ export class HostSupervisor {
   /** One read of host-task's events after the cursor, sent to the hub as one frame. A failure is retried next time, never taken as "no events". */
   async tick(): Promise<void> {
     if (this.stopped || this.ticking) return;
+    this.ledger?.retry();
     this.recover();
     this.retryContexts();
     this.pump();
@@ -652,6 +734,7 @@ export class HostSupervisor {
       const raw = (page.events ?? []).filter((e) => e && Number.isInteger(e.id) && e.id > from).sort((a, b) => a.id - b.id);
       if (!raw.length) return;
       this.sawAcks(raw);
+      this.ledger?.saw(raw);
       let events = raw.map((e) => parseHostEvent(e, this.mask)).filter((e): e is HostEvent => e !== null);
       let cursor = raw.at(-1)!.id;
       const tasks = new Map<string, HostTask>();
@@ -683,6 +766,20 @@ export class HostSupervisor {
   // ── Requests from the hub ─────────────
 
   async request(m: HostOp): Promise<unknown> {
+    // Ledger mode: into host-task's log for the team, nothing to an agent, nothing typed.
+    if (this.ledger)
+      switch (m.op) {
+        case "host.request":
+          return this.ledger.request(m);
+        case "host.followup":
+          return this.ledger.followup(m);
+        case "host.answer":
+          return this.ledger.answer(m);
+        case "host.questions":
+          // The team's questions (devlead's [선택지] handoffs) reach the hub from the log, which keeps
+          // them open; workers' own questions are the team's to handle, not the user's.
+          return { questions: [] } satisfies HostQuestionsReply;
+      }
     switch (m.op) {
       case "host.request":
         return this.newRequest(m);
@@ -887,7 +984,8 @@ export class HostSupervisor {
 
   /** Incoming requests and follow-ups a restart (or a failed try) left unfinished: taken again, with a pause after a failure, given up after the last try. */
   private recover(): void {
-    if (this.stopped) return;
+    // Ledger mode runs nothing for OpenClaw: what an OpenClaw supervisor left here (the kind changed) stays as it was.
+    if (this.stopped || !this.oc) return;
     const now = Date.now();
     for (const inc of Object.values(this.state.incoming)) {
       if (this.taking.has(inc.id) || inc.nextAt > now) continue;
@@ -945,13 +1043,22 @@ export class HostSupervisor {
    * throws (the hub then can't tell, and says so).
    */
   private async lookup(m: Extract<HostOp, { op: "host.lookup" }>): Promise<HostLookupReply> {
+    // Ledger mode: a request's task, once the team made one (or null: not known here).
+    if (m.request !== undefined) {
+      if (typeof m.request !== "string" || !HOST_REQUEST_ID.test(m.request)) throw new Error("bad request id");
+      const r = this.ledger?.receipt(m.request) ?? null;
+      const task = r?.task ? await this.host.show(r.task).then((x) => parseHostTask(x, this.mask), () => null) : null;
+      return { task, question: null, request: r };
+    }
     let id = typeof m.task === "string" ? m.task : null;
     if (id !== null && !HOST_TASK_ID.test(id)) throw new Error("bad task id");
     let question: HostLookupReply["question"] = null;
     if (m.question !== undefined) {
       if (!Number.isInteger(m.question) || m.question <= 0) throw new Error("bad question id");
       const e = (await this.host.events(m.question - 1, 1)).events.find((x) => x.id === m.question);
-      const ev = e && e.kind === "question_required" && e.task ? parseHostEvent(e, this.mask) : null;
+      const parsed = e?.task ? parseHostEvent(e, this.mask) : null;
+      // A worker's question; in ledger mode also the team's ([선택지] in a primary_handoff).
+      const ev = parsed && (parsed.kind === "question_required" || (this.ledger && parsed.source === "devlead")) ? parsed : null;
       if (!ev?.task || (id && ev.task !== id)) return { task: null, question: null };
       question = { question: ev.id, task: ev.task, text: ev.text, askedAt: ev.at, source: ev.source ?? "worker" };
       id = ev.task;
@@ -991,12 +1098,44 @@ export class HostSupervisor {
     }
     // Throws "unknown task: T-…" for a task host-task doesn't have: 0bridge never makes one for context.
     await this.host.show(m.task);
+    if (this.ledger) return this.ledgerContext(m, provider, text);
     // The worker's acknowledgement key: the hub's (it matches the ack by it), else one of its own (an older hub).
     const ack = isHostAck(m.id, m.ack) ? m.ack : newHostAck(m.id);
     const rec: ContextRecord = { id: m.id, task: m.task, dedupe: m.dedupe, provider, text, ack, state: "recorded", detail: null, pendings: 0, nextAt: 0, at: Date.now() };
     this.state.contexts[m.dedupe] = rec;
     this.save();
     await this.checkTask(m.task, [rec], this.herdrOnce());
+    return contextReply(rec);
+  }
+
+  /**
+   * Ledger mode: outside context is kept in host-task as context_received on the task, with where
+   * it came from, and goes no further. Relaying it to the task's worker takes the OpenClaw
+   * supervisor, and it isn't the user's words, so it's never a user_followup; the hub shows it
+   * as not delivered, with why.
+   */
+  private async ledgerContext(m: Extract<HostOp, { op: "host.context" }>, provider: HostProvider, text: string): Promise<HostContextReply> {
+    const key = `context:${m.dedupe}`;
+    const since = this.state.cursor ?? (await this.endOfLog());
+    const p = provider;
+    const out = await this.host.emit(m.task, "context_received", provenanceText({ source: "context", provider: p.kind, board: p.board, card: p.card, action: p.action, url: p.url, dedupe: m.dedupe, id: m.id }, text), key);
+    const event = out.event ?? (await this.host.findByDedupe(key, since));
+    const rec: ContextRecord = {
+      id: m.id,
+      task: m.task,
+      dedupe: m.dedupe,
+      provider,
+      text: "",
+      received: true,
+      state: "refused",
+      detail: `recorded in host-task as context_received (host event #${event ?? "?"}) on ${m.task}, not passed to its worker: in ledger mode 0bridge relays no outside context (that takes the OpenClaw supervisor)`,
+      pendings: 0,
+      nextAt: 0,
+      at: Date.now(),
+      settledAt: Date.now(),
+    };
+    this.state.contexts[m.dedupe] = rec;
+    this.save();
     return contextReply(rec);
   }
 
@@ -1016,7 +1155,7 @@ export class HostSupervisor {
    * CONTEXT_CHECKS tasks at once.
    */
   private retryContexts(): void {
-    if (this.stopped || this.contextRound) return;
+    if (this.stopped || !this.oc || this.contextRound) return;
     const now = Date.now();
     const due = Object.values(this.state.contexts).filter((c) => (c.state === "recorded" || c.state === "pending") && c.nextAt <= now && !this.trying.has(c.dedupe));
     if (!due.length) return;
@@ -1098,7 +1237,7 @@ export class HostSupervisor {
     c.pendings++;
     let queuedEvent: number | null;
     try {
-      queuedEvent = (await this.host.emit(c.task, "context_queued", `context ${c.id} (${c.dedupe}) → ${this.cfg.label ?? this.cfg.agent}, for ${t.worker} in pane ${t.pane}`, `context-queued:${c.dedupe}:${c.pendings}`)).event;
+      queuedEvent = (await this.host.emit(c.task, "context_queued", `context ${c.id} (${c.dedupe}) → ${this.cfg.label ?? this.lead.agent}, for ${t.worker} in pane ${t.pane}`, `context-queued:${c.dedupe}:${c.pendings}`)).event;
     } catch (e) {
       this.contextFailed(c, e as Error);
       return;
@@ -1213,7 +1352,7 @@ export class HostSupervisor {
       const c = Object.values(this.state.contexts).find((x) => x.ack === key && x.task === e.task);
       if (!c || c.state === "worker_acked") continue;
       if ((c.state !== "queued" && c.state !== "supervisor_reply") || (c.queuedEvent !== undefined && e.id <= c.queuedEvent)) {
-        this.log(`host: ignored worker_ack #${e.id} for context ${c.dedupe}: it's ${c.state}, not with ${this.cfg.agent} yet`);
+        this.log(`host: ignored worker_ack #${e.id} for context ${c.dedupe}: it's ${c.state}, not with ${this.oc?.agent ?? "the supervisor"} yet`);
         continue;
       }
       Object.assign(c, { state: "worker_acked", detail: null, settledAt: Date.now(), text: "" });
@@ -1267,7 +1406,7 @@ export class HostSupervisor {
 
   /** Start what may run: per task in order, different tasks side by side, at most maxDispatch at once; a finished turn's result is recorded first. */
   pump(): void {
-    if (this.stopped) return;
+    if (this.stopped || !this.oc) return;
     const now = Date.now();
     const seen = new Set<string>();
     for (const d of this.state.queue) {
@@ -1275,7 +1414,7 @@ export class HostSupervisor {
       seen.add(d.task);
       if (this.dispatching.has(d.task) || d.nextAt > now) continue;
       if (d.result) void this.run(d, () => this.settle(d));
-      else if (this.dispatching.size < this.cfg.maxDispatch) void this.run(d, () => this.dispatch(d));
+      else if (this.dispatching.size < this.lead.maxDispatch) void this.run(d, () => this.dispatch(d));
     }
   }
 
@@ -1295,8 +1434,8 @@ export class HostSupervisor {
   private async dispatch(d: Dispatch): Promise<void> {
     // Outside context: the worker is checked again right before lead hears of it; not ready, it waits again.
     if (d.kind === "context" && !(await this.contextStillReady(d))) return;
-    this.log(`host: ${d.id} → ${this.cfg.agent} (${sessionKey(d.task)})`);
-    const r = await this.openclaw(openclawArgs(this.cfg, d.task, d.file));
+    this.log(`host: ${d.id} → ${this.lead.agent} (${sessionKey(d.task)})`);
+    const r = await this.openclaw(openclawArgs(this.lead, d.task, d.file));
     if (this.stopped) return;
     const item = this.state.queue.find((x) => x.id === d.id);
     if (!item) return;
@@ -1310,8 +1449,8 @@ export class HostSupervisor {
         this.log(`host: ${d.id} failed (${why}); again in ${Math.round(this.retryMs[item.attempts - 1]! / 1000)} s`);
         return;
       }
-      item.result = { kind: "supervisor_error", text: `0bridge couldn't reach ${this.cfg.agent} with ${d.id} after ${item.attempts} tries: ${why}` };
-      this.error(`${d.id} for ${d.task} didn't reach ${this.cfg.agent}: ${why}`);
+      item.result = { kind: "supervisor_error", text: `0bridge couldn't reach ${this.lead.agent} with ${d.id} after ${item.attempts} tries: ${why}` };
+      this.error(`${d.id} for ${d.task} didn't reach ${this.lead.agent}: ${why}`);
     }
     // The turn's outcome is on disk before host-task hears of it: a restart records it, never runs the turn again.
     this.save();
@@ -1335,7 +1474,7 @@ export class HostSupervisor {
         if (n <= this.retryMs.length) {
           item.nextAt = Date.now() + this.retryMs[n - 1]!;
           this.save();
-          this.error(`recording ${this.cfg.agent}'s ${r.kind === "supervisor_reply" ? "reply" : "error"} on ${item.task}: ${(e as Error).message}; again in ${Math.round(this.retryMs[n - 1]! / 1000)} s`);
+          this.error(`recording ${this.lead.agent}'s ${r.kind === "supervisor_reply" ? "reply" : "error"} on ${item.task}: ${(e as Error).message}; again in ${Math.round(this.retryMs[n - 1]! / 1000)} s`);
           return;
         }
         this.error(`gave up recording ${r.kind} for ${item.id} on ${item.task}: ${(e as Error).message}`);
@@ -1354,7 +1493,7 @@ export class HostSupervisor {
    * minutes): what it was sending stays queued and goes again after the restart, with its id.
    */
   private openclaw(args: string[]) {
-    return runTracked(this.cfg.openclaw, args, (OPENCLAW_TIMEOUT_S + 60) * 1000, this.procs);
+    return runTracked(this.lead.openclaw, args, (OPENCLAW_TIMEOUT_S + 60) * 1000, this.procs);
   }
 
   private done(item: Dispatch): void {

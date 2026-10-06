@@ -959,7 +959,14 @@ describe("outside context and existing tasks (docs/plans/dots-host.md, \"Outside
     seed(ctx, [0, 1, 2, 3, 4].map((i) => ({ task: t, dedupe: `trello:b:a${i}` })));
     const s = make();
     const calls = spy(s);
-    await until("five rounds", () => calls.list.length >= 5, 20_000);
+    // What each save wrote: every item's tries and when it's due next, and when it was saved.
+    const snaps: { at: number; cs: { tries: number; nextAt: number }[] }[] = [];
+    const save = s.save.bind(s);
+    s.save = () => {
+      snaps.push({ at: Date.now(), cs: Object.values(s.state.contexts).map((c) => ({ tries: c.tries ?? 0, nextAt: c.nextAt })) });
+      save();
+    };
+    await until("five rounds", () => calls.list.length >= 5 && snaps.some((x) => x.cs.every((c) => c.tries === 5)), 20_000);
     s.stop();
     await Bun.sleep(400);
     expect(calls.show.length).toBe(calls.list.length);
@@ -968,8 +975,22 @@ describe("outside context and existing tasks (docs/plans/dots-host.md, \"Outside
     // Every item was looked at in every round (the same count), and a round asked host-task once for all five.
     expect(new Set(tries).size).toBe(1);
     expect(calls.show.length).toBeLessThanOrEqual(tries[0]! + 1);
-    const gaps = calls.list.slice(1).map((at, i) => at - calls.list[i]!);
-    expect(gaps.at(-1)!).toBeGreaterThan(2 * gaps[0]!);
+    // Rounds further apart, without timing the gaps: after round k every item is due exactly
+    // contextBackoff(k) after that round's look (one time for all five, between the round's herdr
+    // list and the save), and round k+1 starts no earlier than that.
+    let due = 0;
+    for (let k = 1; k <= 5; k++) {
+      const snap = snaps.find((x) => x.cs.every((c) => c.tries === k))!;
+      expect(snap).toBeDefined();
+      const nextAts = new Set(snap.cs.map((c) => c.nextAt));
+      expect(nextAts.size).toBe(1);
+      const looked = [...nextAts][0]! - contextBackoff(k, 60, 480);
+      expect(looked).toBeGreaterThanOrEqual(calls.list[k - 1]!);
+      expect(looked).toBeLessThanOrEqual(snap.at);
+      expect(calls.list[k - 1]!).toBeGreaterThanOrEqual(due);
+      due = [...nextAts][0]!;
+    }
+    expect([1, 2, 3, 4, 5].map((k) => contextBackoff(k, 60, 480))).toEqual([60, 120, 240, 480, 480]);
     // Still busy, as before the restart: no context_pending again, nothing to lead.
     expect(host.events("context_pending")).toEqual([]);
     expect(started(host)).toEqual([]);

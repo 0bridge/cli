@@ -41,11 +41,31 @@ export interface AgentConfig {
 
 /**
  * Who takes host work requested through 0bridge (Dots, ChatGPT, Claude): OpenClaw's agent
- * `agent`, which runs the Herdr workers and keeps `host-task`'s records. The binaries are names on
- * PATH or absolute paths. Nothing here says where replies go: the adapter never asks OpenClaw to
- * deliver anywhere (no Slack, no channel).
+ * (`openclaw`), or the host's work ledger itself (`ledger`: host-task's log, where the team picks
+ * it up). The binaries are absolute paths (`0b agent supervisor` resolves them when it's set up: a
+ * systemd user service has no ~/.local/bin on its PATH), or names on PATH in an older config.
  */
-export interface SupervisorConfig {
+export type SupervisorConfig = OpenclawSupervisorConfig | LedgerSupervisorConfig;
+
+/**
+ * Ledger mode (docs/plans/dots-host.md, "Ledger mode"): what the user tells an AI app through
+ * 0bridge goes into host-task's log the way the host's desk records the user's words: a request
+ * as a `dev_request` (the team gives it a task id), a follow-up as `user_followup`, an answer as
+ * `user_decision`. No task is made here and no agent is run or typed to.
+ */
+export interface LedgerSupervisorConfig {
+  kind: "ledger";
+  label: string | null;
+  hostTask: string;
+  /** How often host-task's events are read (ms). */
+  pollMs: number;
+}
+
+/**
+ * OpenClaw's agent `agent`, which runs the Herdr workers and keeps `host-task`'s records. Nothing
+ * here says where replies go: the adapter never asks OpenClaw to deliver anywhere (no Slack, no channel).
+ */
+export interface OpenclawSupervisorConfig {
   kind: "openclaw";
   agent: string;
   label: string | null;
@@ -63,14 +83,17 @@ export const SUPERVISOR_AGENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 /** agent.json's supervisor, checked, with the defaults filled in; undefined when unset or unusable. */
 export function supervisorConfig(raw: unknown): SupervisorConfig | undefined {
-  const s = raw as Partial<SupervisorConfig> | null | undefined;
-  if (!s || typeof s !== "object" || s.kind !== "openclaw" || typeof s.agent !== "string" || !SUPERVISOR_AGENT.test(s.agent)) return undefined;
+  const s = raw as Partial<OpenclawSupervisorConfig> | Partial<LedgerSupervisorConfig> | null | undefined;
+  if (!s || typeof s !== "object") return undefined;
   const bin = (v: unknown, dflt: string) => (typeof v === "string" && v.trim() && !v.startsWith("-") ? v : dflt);
   const num = (v: unknown, dflt: number, min: number, max: number) => (typeof v === "number" && Number.isFinite(v) ? Math.min(max, Math.max(min, Math.round(v))) : dflt);
+  const label = typeof s.label === "string" && s.label.trim() ? s.label.trim().slice(0, 80) : null;
+  if (s.kind === "ledger") return { kind: "ledger", label, hostTask: bin(s.hostTask, "host-task"), pollMs: num(s.pollMs, 3000, 20, 60_000) };
+  if (s.kind !== "openclaw" || typeof s.agent !== "string" || !SUPERVISOR_AGENT.test(s.agent)) return undefined;
   return {
     kind: "openclaw",
     agent: s.agent,
-    label: typeof s.label === "string" && s.label.trim() ? s.label.trim().slice(0, 80) : null,
+    label,
     hostTask: bin(s.hostTask, "host-task"),
     openclaw: bin(s.openclaw, "openclaw"),
     herdr: bin(s.herdr, "herdr"),
@@ -78,6 +101,12 @@ export function supervisorConfig(raw: unknown): SupervisorConfig | undefined {
     maxDispatch: num(s.maxDispatch, 2, 1, 4),
   };
 }
+
+/** What the hello says about the supervisor: who it is, never paths or flags. */
+export const supervisorInfo = (s: SupervisorConfig) => ({ kind: s.kind, agent: s.kind === "openclaw" ? s.agent : "ledger", label: s.label });
+
+/** The supervisor as `0b agent status` names it: openclaw/lead (dev-herdr-agent), ledger (devlead). */
+export const supervisorTitle = (s: SupervisorConfig) => `${s.kind === "openclaw" ? `openclaw/${s.agent}` : "ledger"}${s.label ? ` (${s.label})` : ""}`;
 
 /**
  * Refused in every repo, whatever its own rules or mode say: `*` is any text (a `*` right after a

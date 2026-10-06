@@ -30,7 +30,7 @@ describe("parseHost", () => {
     expect(await parse("status", "T-012", "--machine", "m1")).toMatchObject({ args: { task: "T-012", machine: "m1" } });
     expect(await parse("status", "hr_abcdefghjk")).toMatchObject({ args: { request: "hr_abcdefghjk" } });
     expect(await parse("followup", "hr_abcdefghjk", "mobile first")).toMatchObject({ tool: "bridge__host_followup", args: { task: "hr_abcdefghjk", text: "mobile first" } });
-    expect(await parse("answer", "#45", "B please", "--choice", "B", "--json")).toEqual({ sub: "answer", tool: "bridge__host_answer", json: true, args: { question: "45", text: "B please", choice: "B" } });
+    expect(await parse("answer", "#45", "B please", "--choice", "B", "--task", "t-12", "--json")).toEqual({ sub: "answer", tool: "bridge__host_answer", json: true, args: { question: "45", task: "T-12", text: "B please", choice: "B" } });
     expect(await parse("questions")).toMatchObject({ tool: "bridge__host_questions", args: {} });
     expect(await parse("updates", "--cursor", "17", "--wait", "5", "--kinds", "question,completed")).toMatchObject({
       tool: "bridge__host_updates",
@@ -41,7 +41,7 @@ describe("parseHost", () => {
 
   test('"-" reads the text from stdin; -- keeps text that looks like a flag', async () => {
     expect(await parseHost(["request", "-"], async () => "  from a pipe\n")).toMatchObject({ args: { request: "from a pipe" } });
-    expect(await parseHost(["answer", "45", "-"], async () => "yes")).toMatchObject({ args: { question: "45", text: "yes" } });
+    expect(await parseHost(["answer", "45", "--task", "T-1", "-"], async () => "yes")).toMatchObject({ args: { question: "45", task: "T-1", text: "yes" } });
     expect(await parse("request", "--", "--not-a-flag")).toMatchObject({ args: { request: "--not-a-flag" } });
   });
 
@@ -59,6 +59,7 @@ describe("parseHost", () => {
     await bad(["request", "x", "--choice", "A"], "doesn't take --choice");
     await bad(["followup", "T-1"], "pass the follow-up");
     await bad(["answer", "abc", "x"], "question id");
+    await bad(["answer", "45", "x"], "--task");
     await bad(["status", "T-1", "T-2"], "one id at most");
     await bad(["questions", "T-1"], "takes no arguments");
     await bad(["updates", "--wait", "60"], "--wait is 0 to 20");
@@ -150,11 +151,11 @@ describe("0b host against the gateway", () => {
   });
 
   test("a tool's refusal: printed plainly on stderr, exit 1; --json still prints {ok: false}", async () => {
-    const r = await run(["answer", "45", "B"]);
+    const r = await run(["answer", "45", "--task", "T-012", "B"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("reaches only a machine whose supervisor is the work ledger");
-    expect(seen.at(-1)!.body.params.arguments).toEqual({ question: "45", text: "B" });
-    const j = await run(["answer", "45", "B", "--json"]);
+    expect(seen.at(-1)!.body.params.arguments).toEqual({ question: "45", task: "T-012", text: "B" });
+    const j = await run(["answer", "45", "--task", "T-012", "B", "--json"]);
     expect(j.code).toBe(1);
     expect(JSON.parse(j.out)).toMatchObject({ ok: false, data: null });
   });

@@ -19,8 +19,8 @@ export const HOST_USAGE = `Usage
         [--priority P0-P3] [--machine m]
   0b host status [T-012|hr_…]         One task or request, or the recent tasks (--machine m)
   0b host followup <T-012|hr_…> "<text>"   More about a task, or a request with no task id yet
-  0b host answer <question> "<text>"  Answer a question from the host (its id, e.g. 45); --choice A
-        [--choice A]                   for one that lists options
+  0b host answer <question> --task T-012 "<text>"   Answer a question from the host (its id, e.g. 45, and
+        [--choice A]                   its task); --choice A for one that lists options
   0b host questions                   Questions waiting for you (--machine m)
   0b host updates [--cursor c]        New questions, completions, failures and progress since the
         [--wait s] [--kinds k,…]       cursor; the last line is the next cursor, for the next run
@@ -58,6 +58,7 @@ export async function parseHost(argv: string[], readStdin: () => Promise<string>
           priority: { type: "string" },
           machine: { type: "string" },
           choice: { type: "string" },
+          task: { type: "string" },
           cursor: { type: "string" },
           wait: { type: "string" },
           kinds: { type: "string" },
@@ -110,14 +111,15 @@ export async function parseHost(argv: string[], readStdin: () => Promise<string>
       return { sub: "followup", tool, json, args: { task, text: await textOf(words, 'the follow-up: 0b host followup T-012 "more"'), ...machine } };
     }
     case "answer": {
-      allowed(["choice", "machine"]);
+      allowed(["choice", "machine", "task"]);
       const [question, ...words] = rest;
-      if (!question || !/^#?\d+$/.test(question)) throw new HostUsage('0b host answer <question id, e.g. 45> "<text>"');
+      if (!question || !/^#?\d+$/.test(question)) throw new HostUsage('0b host answer <question id, e.g. 45> --task T-012 "<text>"');
+      if (!v.task || !/^T-\d+$/i.test(v.task)) throw new HostUsage("--task <T-012>: the task the question is on (0b host questions shows it), so the answer can't land on another question");
       return {
         sub: "answer",
         tool,
         json,
-        args: { question: question.replace(/^#/, ""), text: await textOf(words, 'the answer: 0b host answer 45 "B, and keep the old page"'), ...(v.choice ? { choice: v.choice } : {}), ...machine },
+        args: { question: question.replace(/^#/, ""), task: v.task.toUpperCase(), text: await textOf(words, 'the answer: 0b host answer 45 --task T-012 "B, and keep the old page"'), ...(v.choice ? { choice: v.choice } : {}), ...machine },
       };
     }
     case "questions":

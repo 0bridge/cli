@@ -80,6 +80,8 @@ export interface LedgerAnswer {
   event: number | null;
   tries?: number;
   nextAt?: number;
+  /** Why the team's question had closed before this answer came (the hub says; recorded anyway). */
+  closed?: string;
 }
 
 /** A time as the host's records write it: 2026-10-06 17:31 KST. */
@@ -96,8 +98,8 @@ export const followupText = (f: Pick<LedgerFollowup, "id" | "text" | "at" | "via
  * give it (`choice: T-044|e1145|A / 선택: A) 이름`, which devlead checks before anything it can't
  * undo), then the user's words, then which question it answers and where it came from.
  */
-export const decisionText = (a: Pick<LedgerAnswer, "question" | "task" | "text" | "choice" | "label" | "at" | "via">) =>
-  `${a.choice ? `choice: ${a.task}|e${a.question}|${a.choice} / 선택: ${a.choice}) ${a.label ?? ""}`.trimEnd() + "\n" : ""}${a.text}\n\n(질문 #${a.question} 답) ${sourceLine(a.via, a.at)}`;
+export const decisionText = (a: Pick<LedgerAnswer, "question" | "task" | "text" | "choice" | "label" | "at" | "via" | "closed">) =>
+  `${a.choice ? `choice: ${a.task}|e${a.question}|${a.choice} / 선택: ${a.choice}) ${a.label ?? ""}`.trimEnd() + "\n" : ""}${a.text}\n\n(질문 #${a.question} 답${a.closed ? `, 이 질문은 답이 오기 전에 닫혔음: ${a.closed}` : ""}) ${sourceLine(a.via, a.at)}`;
 
 export interface LedgerDeps {
   host: HostTaskClient;
@@ -208,7 +210,8 @@ export class LedgerMode {
         if (!option) return { question: q, task: ev.task, status: "refused", detail: ev.options?.length ? `${choice} isn't one of question #${q}'s options (${ev.options.map((o) => o.key).join(", ")})` : `question #${q} lists no options; answer in words` };
       }
       const since = await this.d.logEnd();
-      const a: LedgerAnswer = { question: q, task: ev.task!, text, choice: option?.key ?? null, ...(option ? { label: option.label } : {}), at: Date.now(), ...(viaOf(m.via) ? { via: viaOf(m.via)! } : {}), since, event: null };
+      const closed = typeof m.closed === "string" && m.closed.trim() ? m.closed.trim().slice(0, 200) : undefined;
+      const a: LedgerAnswer = { question: q, task: ev.task!, text, choice: option?.key ?? null, ...(option ? { label: option.label } : {}), at: Date.now(), ...(viaOf(m.via) ? { via: viaOf(m.via)! } : {}), ...(closed ? { closed } : {}), since, event: null };
       this.s.ledgerAnswers[String(q)] = a;
       this.d.save();
       await this.recordAnswer(a, true);

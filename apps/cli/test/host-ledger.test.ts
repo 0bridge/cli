@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { parseChoices } from "@0bridge/core/host";
 import type { HostAnswerReply, HostContextReply, HostEventsFrame, HostFollowupReply, HostLookupReply, HostRequestReply } from "../src/agent/protocol.ts";
-import { kst } from "../src/agent/ledger.ts";
+import { decisionText, kst } from "../src/agent/ledger.ts";
 import { supervisorConfig, supervisorInfo } from "../src/agent/policy.ts";
 import { HostSupervisor, parseHostEvent, readSupervisorState, supervisorStatePath, type SupervisorOptions } from "../src/agent/supervisor.ts";
 import { fakeHost } from "./fake-host.ts";
@@ -319,5 +319,15 @@ describe("ledger mode: follow-ups and answers", () => {
     expect(frames.flatMap((f) => f.events).find((e) => e.id === q)).toMatchObject({ kind: "primary_handoff", task: t, source: "devlead", options: [{ key: "A" }, { key: "B" }, { key: "C" }] });
     expect(((await s.request({ op: "host.status", task: t })) as { tasks: { id: string }[] }).tasks.map((x) => x.id)).toEqual([t]);
     expect(s.status()).toMatchObject({ kind: "ledger", agent: null, label: "devlead", ledger: { requests: 0, waiting: 0 } });
+  });
+});
+
+describe("decision text", () => {
+  test("an answer to a question that had closed names that question in its choice line and says why it had closed", () => {
+    const at = Date.parse("2026-10-06T14:14:00Z");
+    const t = decisionText({ question: 1837, task: "T-018", text: "A로 답해 줘", choice: "A", label: "받았음", at, via: { client: "ChatGPT", kind: "oauth" }, closed: "the team asked a newer question since (#1852)" });
+    expect(t.split("\n")[0]).toBe("choice: T-018|e1837|A / 선택: A) 받았음");
+    expect(t).toContain("(질문 #1837 답, 이 질문은 답이 오기 전에 닫혔음: the team asked a newer question since (#1852))");
+    expect(decisionText({ question: 5, task: "T-001", text: "B", choice: null, at, via: undefined })).toContain("(질문 #5 답) 출처:");
   });
 });

@@ -187,7 +187,7 @@ export type HostOp = (
    * ack: the answer's acknowledgement key if it goes to the supervisor (HOST_ACK_KEY: `ha_<question>:<nonce>`).
    * choice: ledger mode, the option the user picked (its key in the question's `[선택지]`).
    */
-  | { op: "host.answer"; question: number; text: string; via?: HostVia; ack?: string; choice?: string }
+  | { op: "host.answer"; question: number; text: string; via?: HostVia; ack?: string; choice?: string; /** Ledger mode: why the team's question had closed before this answer (it's recorded anyway, saying so). */ closed?: string }
   | { op: "host.status"; task?: string; project?: string; limit?: number }
   | { op: "host.questions" }
   /** An existing task or question the hub hasn't seen (made outside 0bridge): does this machine have it? Ledger mode: a request's task, by its id. */

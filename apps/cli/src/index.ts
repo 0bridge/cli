@@ -69,6 +69,7 @@ import { usageCommand } from "./usage.ts";
 import { settingsCommand } from "./settings.ts";
 import { agentVmSetup } from "./agent-vm.ts";
 import { feedbackCommand } from "./feedback.ts";
+import { hostCommand } from "./host.ts";
 
 declare const VERSION: string;
 const version = typeof VERSION !== "undefined" ? VERSION : "dev";
@@ -180,6 +181,10 @@ ${c.bold("Usage")}
         [--label <name>]        its work ledger (host-task) as dev_request, user_followup, user_decision (off, status)
   0b agent supervisor openclaw --agent <id>   Host work your AI apps request goes to
         [--label <name>]        that OpenClaw agent here, one session per host-task task (off, status)
+  0b host request "<text>"     From any terminal (an agent's computer too): hand work to your dev machine's
+        [--project p] [--priority P2]  work ledger; prints its id (hr_… or T-012). Also: status [id], followup
+        [--machine m] [--json]  <id> "<text>", answer <question> "<text>" [--choice A], questions,
+                               updates [--cursor c] [--wait s] (last line: the next cursor). "-": stdin
   0b sessions                  What your coding sessions are doing now, on every machine and in the cloud
         [--state needs-you]     (--machine m, --repo r); watch: refresh every 5 s
   0b sessions on|off           Post this machine's session states (Claude Code, Codex, Cursor) to your board
@@ -313,7 +318,7 @@ const ctx = defaultContext();
  * otherwise. Everything else, run inside a checkout linked to a project, uses the account that
  * project belongs to, so nobody picks accounts by hand.
  */
-const MACHINE_WIDE = new Set(["setup", "init", "import", "apply", "mcp", "skill", "skills", "use", "tool", "login", "logout", "account", "accounts", "background", "backups", "restore", "profile", "profiles", "history", "resume", "hook", "context", "team", "teams", "memory", "agent", "sessions", "webhook", "webhooks", "usage"]);
+const MACHINE_WIDE = new Set(["setup", "init", "import", "apply", "mcp", "skill", "skills", "use", "tool", "login", "logout", "account", "accounts", "background", "backups", "restore", "profile", "profiles", "history", "resume", "hook", "context", "team", "teams", "memory", "agent", "sessions", "webhook", "webhooks", "usage", "host"]);
 
 /** Take `--account <email>` out of argv, anywhere before `--` (the command `0b exec` runs keeps its own flags). */
 function takeAccountFlag(argv: string[]): string | undefined {
@@ -559,6 +564,9 @@ function tool(args: string[]) {
 async function main() {
   // `0b exec -- cmd --any --flags`: everything after is the command's, not ours.
   if (process.argv[2] === "exec") return execCommand(ctx, process.argv.slice(3));
+  // `0b host request "…" --project p`: its own flags (--project takes a value there). --account
+  // was already taken out of argv above (takeAccountFlag runs when this module loads), so it works here too.
+  if (process.argv[2] === "host") return hostCommand(ctx, process.argv.slice(3), version);
   // `0b webhook run <name> -- python3 sync.py --flag`: what follows `--` is the command to run, never ours.
   let args = process.argv.slice(2);
   let command: string[] | undefined;

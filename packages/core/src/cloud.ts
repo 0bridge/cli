@@ -283,6 +283,16 @@ export class CloudError extends Error {
   }
 }
 
+/** The MCP version `CloudClient.callTool` speaks. */
+export const MCP_PROTOCOL = "2026-07-28";
+
+/** What an MCP tools/call returns (the parts the CLI reads). */
+export interface McpToolResult {
+  content: { type: string; text?: string }[];
+  structuredContent?: Record<string, unknown>;
+  isError?: boolean;
+}
+
 /** Thin client for the gateway's /api. */
 /** Network errors where the request never reached the server, so sending it again is safe. */
 const NOT_SENT = new Set(["ETIMEDOUT", "ECONNREFUSED", "ENETUNREACH", "EHOSTUNREACH", "EAI_AGAIN", "ENOTFOUND", "UND_ERR_CONNECT_TIMEOUT"]);
@@ -349,6 +359,47 @@ export class CloudClient {
       method === "GET",
       this.server,
     );
+  }
+
+  /**
+   * One MCP tools/call on the gateway's /mcp with this token, for commands that use one of
+   * 0bridge's own tools by its name (`0b host`). MCP 2026-07-28: no session, each request carries
+   * its own envelope (`_meta`) and says its method and tool in the Mcp-Method and Mcp-Name
+   * headers. Calling a tool by its name works whatever the address lists (code mode, D73). The
+   * tool's result (isError for a tool's refusal), or a CloudError when the call itself failed.
+   */
+  async callTool(name: string, args: Record<string, unknown>, client: { name: string; version: string } = { name: "0b", version: "dev" }): Promise<McpToolResult> {
+    const _meta = { "io.modelcontextprotocol/protocolVersion": MCP_PROTOCOL, "io.modelcontextprotocol/clientCapabilities": {}, "io.modelcontextprotocol/clientInfo": client };
+    const res = await retrying(
+      () =>
+        fetch(`${this.server}/mcp`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${this.token}`,
+            "Content-Type": "application/json",
+            Accept: "application/json, text/event-stream",
+            "MCP-Protocol-Version": MCP_PROTOCOL,
+            "Mcp-Method": "tools/call",
+            "Mcp-Name": name,
+          },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args, _meta } }),
+        }),
+      false,
+      this.server,
+    );
+    const text = await res.text();
+    // The answer may come as an event stream: its last data line is the response.
+    const body = res.headers.get("content-type")?.includes("text/event-stream")
+      ? (text.split("\n").filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trim()).pop() ?? "")
+      : text;
+    let msg: { result?: McpToolResult; error?: { message?: string } } = {};
+    try {
+      msg = JSON.parse(body || "{}");
+    } catch {}
+    if (res.status === 401) throw new CloudError("0bridge didn't accept this device's sign-in (signed out, revoked or expired): sign in again with `0b login` (an agent's computer: `0b setup --agent-vm`)", 401);
+    if (msg.error) throw new CloudError(msg.error.message ?? "the MCP call failed", res.status);
+    if (!res.ok || !msg.result) throw new CloudError(`${res.status} ${res.statusText}`.trim(), res.status);
+    return msg.result;
   }
 
   me() {

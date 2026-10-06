@@ -81,7 +81,15 @@ export class Daemon {
   private log: (line: string) => void;
   private secrets: { at: number; values: string[] } | null = null;
   /** The host supervisor, while agent.json sets one up (key: its settings). */
-  private host: { key: string; sup: HostSupervisor } | null = null;
+  private host: { key: string; sup: HostSupervisor; kind: "openclaw" | "ledger" } | null = null;
+  /** The supervisor key last seen (undefined: not looked at yet), so a change is told to the hub once. */
+  private supKey: string | null | undefined = undefined;
+  /**
+   * Called when agent.json's supervisor changed since it was last looked at (`0b agent supervisor`
+   * pokes the daemon, or a request found it): runDaemon sends the hub a new hello at once, so it
+   * never picks this machine by a kind it no longer has.
+   */
+  onSupervisorChange: (() => void) | null = null;
   private supOpts: DaemonOptions["supervisor"];
 
   constructor(
@@ -154,13 +162,16 @@ export class Daemon {
   supervisor(): HostSupervisor | null {
     const cfg = loadAgentConfig(this.ctx);
     const key = cfg.enabled && cfg.supervisor ? JSON.stringify(cfg.supervisor) : null;
+    const seen = this.supKey;
+    this.supKey = key;
+    if (seen !== undefined && seen !== key) queueMicrotask(() => this.onSupervisorChange?.());
     if ((this.host?.key ?? null) === key) return this.host?.sup ?? null;
     this.host?.sup.stop();
     this.host = null;
     if (!key) return null;
     const sup = new HostSupervisor(this.ctx, cfg.supervisor!, { ...this.supOpts, mask: (s) => redact(s, this.vaultValues()), log: this.log });
     if (this.send) sup.connected(this.send);
-    this.host = { key, sup };
+    this.host = { key, sup, kind: cfg.supervisor!.kind };
     return sup;
   }
 
@@ -210,6 +221,10 @@ export class Daemon {
         this.enabled();
         const sup = this.supervisor();
         if (!sup) throw new Error(`no supervisor is set up on ${machineName()} (0b agent supervisor ledger, or openclaw --agent <id>, there)`);
+        // An agent computer's call: only while this machine's supervisor is the work ledger,
+        // as agent.json says now, whatever the hub last heard in a hello.
+        if ((m as HostOp).ledgerOnly && this.host?.kind !== "ledger")
+          throw new Error(`${machineName()}'s supervisor is ${this.host?.kind ?? "not set"} now, not the work ledger, so it takes nothing from an agent computer's token (0b agent supervisor ledger there)`);
         return sup.request(m as HostOp);
       }
       default:
@@ -220,6 +235,8 @@ export class Daemon {
   /** A question from a task's permission tool (over the local socket). */
   async onIpc(msg: Record<string, unknown>): Promise<unknown> {
     if (msg.op === "ping") return { ok: true };
+    // `0b agent supervisor …` changed agent.json: look again now (a change sends the hub a new hello).
+    if (msg.op === "reload") return { supervisor: this.supervisor() ? this.host!.kind : null };
     if (msg.op === "status")
       return {
         connected: Boolean(this.send),
@@ -661,11 +678,16 @@ export async function runDaemon(ctx: Context, opts: { log?: (line: string) => vo
   const cfgFile = join(ctx.storeDir, "agent.json");
   const mtime = () => (existsSync(cfgFile) ? statSync(cfgFile).mtimeMs : 0);
   let seen = mtime();
-  const watch = setInterval(async () => {
-    if (mtime() === seen) return;
+  const resend = async () => {
     seen = mtime();
     hello = await daemon.hello();
     conn?.send(hello);
+  };
+  // The supervisor changed (`0b agent supervisor` pokes the daemon, or a request found it): tell the hub now.
+  daemon.onSupervisorChange = () => void resend().catch(() => {});
+  const watch = setInterval(async () => {
+    if (mtime() === seen) return;
+    await resend();
   }, 15_000);
 
   let stopping = false;

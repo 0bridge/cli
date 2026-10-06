@@ -200,6 +200,43 @@ describe("agent daemon", () => {
     await s.daemon.shutdown();
   });
 
+  test("an agent computer's op (ledgerOnly) runs only while agent.json's supervisor is the ledger now; a change is told to the hub at once", async () => {
+    const s = setup();
+    const host = fakeHost(join(s.base, "host"));
+    let changes = 0;
+    s.daemon.onSupervisorChange = () => void changes++;
+    const repos = [{ root: s.repo, mode: "edit" as const, worktree: true, deny: [] }];
+    const ledger = { kind: "ledger" as const, label: "devlead", hostTask: host.bins.hostTask, pollMs: 30 };
+    const openclaw = { kind: "openclaw" as const, agent: "lead", label: null, hostTask: host.bins.hostTask, openclaw: host.bins.openclaw, herdr: host.bins.herdr, pollMs: 30, maxDispatch: 2 };
+    const settle = () => new Promise((r) => setTimeout(r, 0));
+    // Ledger now: taken, and the change from no supervisor is reported.
+    saveAgentConfig(s.ctx, { enabled: true, repos, supervisor: ledger });
+    const r = (await s.req({ op: "host.request", requestId: "hr_vmledger01", text: "Tidy the docs", title: "docs", ledgerOnly: true })) as { task: null; dispatch: string };
+    expect([r.task, r.dispatch]).toEqual([null, "recorded"]);
+    await settle();
+    expect(changes).toBe(1);
+    // Switched to OpenClaw (the hub may not have heard yet): refused here, nothing reaches OpenClaw or a pane.
+    saveAgentConfig(s.ctx, { enabled: true, repos, supervisor: openclaw });
+    await expect(s.req({ op: "host.answer", question: 45, text: "B", ledgerOnly: true })).rejects.toThrow(/supervisor is openclaw now, not the work ledger/);
+    await expect(s.req({ op: "host.followup", requestId: "hf_vmledger01", task: "T-001", text: "more", ledgerOnly: true })).rejects.toThrow(/not the work ledger/);
+    await expect(s.req({ op: "host.request", requestId: "hr_vmledger02", text: "x", title: "x", ledgerOnly: true })).rejects.toThrow(/not the work ledger/);
+    await settle();
+    expect(changes).toBe(2);
+    expect(host.openclawCalls()).toEqual([]);
+    expect(host.events("user_decision")).toEqual([]);
+    // Without ledgerOnly (a device token, a chat app) the OpenClaw supervisor takes it as before.
+    expect(await s.req({ op: "host.status" })).toMatchObject({ tasks: expect.any(Array) });
+    // `0b agent supervisor ledger` pokes a running daemon: it looks again now and the hub hears at once.
+    saveAgentConfig(s.ctx, { enabled: true, repos, supervisor: ledger });
+    expect(await s.daemon.onIpc({ op: "reload" })).toEqual({ supervisor: "ledger" });
+    await settle();
+    expect(changes).toBe(3);
+    expect(await s.daemon.onIpc({ op: "reload" })).toEqual({ supervisor: "ledger" });
+    await settle();
+    expect(changes).toBe(3);
+    await s.daemon.shutdown();
+  });
+
   test("hello lists what this machine offers", async () => {
     const { daemon, repo } = setup({ profiles: { claude: { work: { CLAUDE_CONFIG_DIR: "/x" } } } });
     const h = await daemon.hello();

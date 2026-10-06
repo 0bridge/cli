@@ -179,7 +179,7 @@ export interface HostProvider {
 }
 
 /** Hub → daemon requests (inside the existing {t:"req", rid, op, …} envelope). */
-export type HostOp =
+export type HostOp = (
   | { op: "host.request"; requestId: string; text: string; title: string; project?: string; repo?: string; worker?: string; priority?: string; via?: HostVia }
   /** Ledger mode also takes `request` (hr_…): with no task, a follow-up to a request the team hasn't given a task id yet. */
   | { op: "host.followup"; requestId: string; task?: string; request?: string; text: string; via?: HostVia }
@@ -193,7 +193,15 @@ export type HostOp =
   /** An existing task or question the hub hasn't seen (made outside 0bridge): does this machine have it? Ledger mode: a request's task, by its id. */
   | { op: "host.lookup"; task?: string; question?: number; request?: string }
   /** Outside context for a task's existing worker, through the supervisor (docs/plans/dots-host.md, "Outside context"). */
-  | { op: "host.context"; id: string; task: string; dedupe: string; provider: HostProvider; text: string; ack?: string };
+  | { op: "host.context"; id: string; task: string; dedupe: string; provider: HostProvider; text: string; ack?: string }
+) & {
+  /**
+   * Added for D74 (an agent computer's token, `0b host`): take this op only while this machine's
+   * supervisor is the work ledger, as its agent.json says now; refuse it otherwise. Older daemons
+   * ignore it (the hub checks the kind from the hello as well).
+   */
+  ledgerOnly?: boolean;
+};
 
 export interface HostLookupReply {
   task: HostTask | null;

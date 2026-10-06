@@ -101,7 +101,11 @@ export async function agentCommand(ctx: Context, args: string[], opts: AgentOpti
     case "log":
       return log(ctx, rest[0]);
     case "supervisor":
-      return supervisor(ctx, rest, opts);
+      supervisor(ctx, rest, opts);
+      // A running daemon looks at agent.json again now and tells the hub its new supervisor, rather
+      // than on its next 15-second check (D74: the hub picks a machine by that kind). Not running: nothing to tell.
+      if (rest[0] === "ledger" || rest[0] === "openclaw" || rest[0] === "off") await ipcRequest(ipcPath(ctx), { op: "reload" }, 2000).catch(() => {});
+      return;
     case "perm-mcp":
       if (!rest[0]) fail("usage: 0b agent perm-mcp <task file>");
       return permMcp(rest[0]);

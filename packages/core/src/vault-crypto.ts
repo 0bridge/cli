@@ -145,6 +145,8 @@ export async function pairingCode(devicePub: string): Promise<string> {
   return `${c.slice(0, 4)}-${c.slice(4)}`;
 }
 
+export { LOGIN_CODE_CHARS, loginCode } from "./login-code.ts";
+
 /** New machine: a key pair for this one request. Keep `privateKey` in memory; send `publicKey`. */
 export async function pairingKeyPair(): Promise<{ privateKey: CryptoKey; publicKey: string }> {
   const kp = (await subtle().generateKey(ECDH, false, ["deriveBits"])) as CryptoKeyPair;

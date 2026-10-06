@@ -51,6 +51,7 @@ import {
 import { registryFirst, withRegistry } from "@0bridge/core/mcp-registry";
 import { qrPng, qrTerminal, qrTerminalWidth } from "@0bridge/core/qr";
 import { AGENT_VM_DEVICE_SCOPE } from "@0bridge/core/agent-vm";
+import { loginCode, pairingKeyPair } from "@0bridge/core/vault-crypto";
 import { OFF_FIX, OFF_NOTE, readinessOf, toolsText, type ReadinessInput } from "@0bridge/core/readiness";
 import { c, canOpenBrowser, p, planSummary, spinner, where } from "./ui.ts";
 import { loginInto } from "./profile.ts";
@@ -207,6 +208,8 @@ export interface DeviceStart {
   expiresAt: number;
   /** Why the account couldn't be asked on its dashboard, when a hint was wanted but not filed. */
   hintNote?: string;
+  /** The code is the one made from `vaultPub`: the approval can hand over the vault key (T-039). */
+  vault?: boolean;
 }
 
 /** The machine as a sign-in hint names it on the dashboard ("muse-vm · Linux · agent VM"). */
@@ -218,13 +221,14 @@ export type HintMachine = { name: string; os: string; arch: string; kind: "cli" 
  * dashboard (push approval, round 2): the server answers with the number the dashboard will ask
  * for, and the same whether or not that account exists.
  */
-export async function startDeviceSignIn(server: string, opts: { hint?: { email: string; machine: HintMachine }; agentVm?: boolean } = {}): Promise<DeviceStart> {
+export async function startDeviceSignIn(server: string, opts: { hint?: { email: string; machine: HintMachine }; agentVm?: boolean; vaultPub?: string } = {}): Promise<DeviceStart> {
   server = server.replace(/\/+$/, "");
   const res = await fetch(`${server}/auth/device/code`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     // An agent's computer says so up front: the approval page shows it, and the session can only make its token.
-    body: JSON.stringify({ client_id: CLI_CLIENT_ID, ...(opts.agentVm ? { scope: AGENT_VM_DEVICE_SCOPE } : {}) }),
+    // `vault_pub`: hand the vault key over with this sign-in, encrypted to this key (T-039).
+    body: JSON.stringify({ client_id: CLI_CLIENT_ID, ...(opts.agentVm ? { scope: AGENT_VM_DEVICE_SCOPE } : {}), ...(opts.vaultPub ? { vault_pub: opts.vaultPub } : {}) }),
   });
   if (!res.ok) throw new Error(`could not start sign-in (${res.status})`);
   const dc = (await res.json()) as { device_code: string; user_code: string; verification_uri: string; verification_uri_complete: string; interval?: number; expires_in?: number };
@@ -237,6 +241,8 @@ export async function startDeviceSignIn(server: string, opts: { hint?: { email: 
     interval: dc.interval ?? 5,
     expiresAt: Date.now() + (dc.expires_in ?? 600) * 1000,
   };
+  // Only a code made from this key binds it: the person compares that code, so a server that swapped the key would show another.
+  if (opts.vaultPub && dc.user_code.replace(/[^A-Z0-9]/gi, "").toUpperCase() === (await loginCode(opts.vaultPub))) s.vault = true;
   if (opts.hint) {
     try {
       const h = await fetch(`${server}/device/hint`, {
@@ -346,14 +352,14 @@ export function hintMachine(agentVm?: { name: string; platform?: string }): Hint
   return { name: (agentVm?.name ?? hostname()).slice(0, 64), os: process.platform, arch: process.arch, kind: agentVm ? "agent-vm" : "cli", ...(agentVm?.platform ? { platform: agentVm.platform } : {}) };
 }
 
-/** The device flow from start to approval: a short-lived session token. */
-async function deviceSignIn(server: string, opts: { qr?: string; email?: string; agentVm?: { name: string; platform?: string } } = {}): Promise<string> {
-  const s = await startDeviceSignIn(server, { ...(opts.email ? { hint: { email: opts.email, machine: hintMachine(opts.agentVm) } } : {}), agentVm: Boolean(opts.agentVm) });
+/** The device flow from start to approval: a short-lived session token, and the sign-in it came from. */
+async function deviceSignIn(server: string, opts: { qr?: string; email?: string; agentVm?: { name: string; platform?: string }; vaultPub?: string } = {}): Promise<{ token: string; start: DeviceStart }> {
+  const s = await startDeviceSignIn(server, { ...(opts.email ? { hint: { email: opts.email, machine: hintMachine(opts.agentVm) } } : {}), agentVm: Boolean(opts.agentVm), ...(opts.vaultPub ? { vaultPub: opts.vaultPub } : {}) });
   printSignInLink(s, { tty: Boolean(process.stdout.isTTY), ...(opts.qr ? { qr: opts.qr } : {}) });
   const token = await pollDeviceSignIn(server, s);
   // Without untilMs, polling only ends approved or with an error.
   if (token === "pending") throw new Error("the code expired — run `0b login` again");
-  return token;
+  return { token, start: s };
 }
 
 export async function login(
@@ -372,7 +378,11 @@ export async function login(
   // Either flow yields a short-lived credential that is used once, to mint this device's long-lived token.
   // --email (or ZEROB_EMAIL) names the account to ask on its dashboard, besides the link.
   const email = opts.email ?? (process.env.ZEROB_EMAIL || undefined);
-  const bootstrap = opts.web ? await oauthSignIn(server) : await deviceSignIn(server, { ...opts, email });
+  // The vault key can come with the sign-in, encrypted to a key pair that lives only in this process (T-039).
+  // An agent's computer asks for it separately (agent-vm.ts), with its own warning on the approval.
+  const pair = opts.web || opts.agentVm ? null : await pairingKeyPair();
+  const signIn = opts.web ? null : await deviceSignIn(server, { ...opts, email, ...(pair ? { vaultPub: pair.publicKey } : {}) });
+  const bootstrap = signIn ? signIn.token : await oauthSignIn(server);
   const spin = spinner();
   spin.start("Creating a token for this device");
   // An AI agent's computer gets an expiring token labeled as one (agent-vm.ts); anything else a device token.
@@ -385,7 +395,9 @@ export async function login(
       body: "{}",
     }).catch(() => {});
   }
-  await saveLogin(ctx, server, token, before, spin);
+  const account = await saveLogin(ctx, server, token, before, spin);
+  // vault.ts imports this module: loaded here, when it's needed.
+  if (pair && signIn?.start.vault) await (await import("./vault.ts")).receiveLoginKey({ ...ctx, account: account.userId }, signIn.start.deviceCode, pair).catch((e: Error) => p.log.warn(`Couldn't take the vault key: ${e.message}. Run 0b vault unlock.`));
 }
 
 /**
@@ -398,7 +410,7 @@ export async function finishLogin(ctx: Context, server: string, token: string, o
   await saveLogin(ctx, server.replace(/\/+$/, ""), token, loadAccounts(ctx), spin);
 }
 
-async function saveLogin(ctx: Context, server: string, token: string, before: ReturnType<typeof loadAccounts>, spin: ReturnType<typeof spinner>): Promise<void> {
+async function saveLogin(ctx: Context, server: string, token: string, before: ReturnType<typeof loadAccounts>, spin: ReturnType<typeof spinner>): Promise<CloudAccount> {
   const store = openSecretStore(ctx.storeDir);
   const me = await new CloudClient(server, token).me();
   // The same account again: its old token on this device is replaced, so revoke it.
@@ -426,6 +438,7 @@ async function saveLogin(ctx: Context, server: string, token: string, before: Re
         `${c.dim("Make it the default:")} ${c.cyan(`0b account use ${name}`)}`,
     );
   }
+  return account;
 }
 
 /**

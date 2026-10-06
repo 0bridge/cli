@@ -539,6 +539,10 @@ export class CloudClient {
   grant(id: string) {
     return this.req<{ status: "pending" | "approved" | "denied" | "expired"; until: number | null }>(`/vault/grants/${encodeURIComponent(id)}`);
   }
+  /** The vault key a `0b login` approval sealed to this machine (T-039), once; 404 when none came with it. */
+  loginKey(deviceCode: string) {
+    return this.req<{ ephemeralPub: string; ct: string }>("/vault/login-key", { method: "POST", body: JSON.stringify({ deviceCode }) });
+  }
   /** A new machine asks for the vault key, sending the public key it should be encrypted to. */
   requestPairing(devicePub: string) {
     return this.req<{ id: string; url: string; expiresAt: number }>("/vault/pairings", { method: "POST", body: JSON.stringify({ devicePub }) });

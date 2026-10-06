@@ -10,6 +10,7 @@
     "./brand": "./src/brand.ts",
     "./onboarding": "./src/onboarding.ts",
     "./vault-crypto": "./src/vault-crypto.ts",
+    "./login-code": "./src/login-code.ts",
     "./mcp-registry": "./src/mcp-registry.ts",
     "./scope": "./src/scope.ts",
     "./agent-vm": "./src/agent-vm.ts",

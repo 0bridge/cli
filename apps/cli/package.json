@@ -1,6 +1,6 @@
 {
   "name": "0bridge",
-  "version": "0.2.30",
+  "version": "0.2.31",
   "description": "One bridge for all your AI agent tooling — MCP servers, skills, and AGENTS.md synced across Claude Code, Codex, Cursor, and more.",
   "type": "module",
   "bin": {

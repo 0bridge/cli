@@ -707,6 +707,57 @@ async function unlock(ctx: Context, withRecoveryKey: boolean): Promise<void> {
   console.log(`${c.green("✓")} this machine can open your vault now (${state.items.length} values).`);
 }
 
+/**
+ * After `0b login` (T-039): the vault key its approval sealed to this machine's key pair, if one
+ * came with it. `ctx` is the account that just signed in. Says whether this machine can open the
+ * vault now; quiet when the account has no vault.
+ */
+export async function receiveLoginKey(ctx: Context, deviceCode: string, pair: { privateKey: CryptoKey; publicKey: string }): Promise<void> {
+  const { client } = cloudClient(ctx);
+  const { state } = await fetchVault(ctx, client);
+  if (!state.keyId) return;
+  const have = localKey(ctx);
+  if (have && vaultKeyId(have) === state.keyId) return;
+  const take = () =>
+    client.loginKey(deviceCode).catch((e) => {
+      if (e instanceof CloudError && e.status === 404) return null;
+      throw e;
+    });
+  let sealed = await take();
+  // The approval saves it before it approves; a slow write may still land just after the poll.
+  for (let i = 0; !sealed && i < 2; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    sealed = await take();
+  }
+  let key: Uint8Array | null = null;
+  if (sealed) {
+    try {
+      key = await openFromApprover(pair.privateKey, pair.publicKey, sealed.ephemeralPub, sealed.ct);
+    } catch {
+      key = null;
+    }
+  }
+  // The key must open the vault's own values, not just match the id the server reports: a server
+  // that sealed a key of its own here would otherwise read whatever this machine stores later.
+  const sample = state.items.find((i) => i.ct);
+  const opens = (k: Uint8Array) => {
+    if (!sample) return true;
+    try {
+      openValue(k, sample);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (key && vaultKeyId(key) === state.keyId && opens(key)) {
+    saveLocalKey(ctx, key);
+    dropPending(ctx);
+    console.log(`${c.green("✓")} this machine can open your vault too (${state.items.length} values).`);
+    return;
+  }
+  console.log(c.dim(`This machine can't open your vault yet: run ${"0b vault unlock"} and approve it in your browser.`));
+}
+
 /** On a machine that has the vault: hand the key to another of the user's machines, after comparing codes. */
 async function approvePairings(ctx: Context): Promise<void> {
   // Which machines wait is fine for anyone to know (an agent can pass it on); answering takes the person.

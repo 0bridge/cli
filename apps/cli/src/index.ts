@@ -66,6 +66,7 @@ import { sessionsCommand } from "./sessions.ts";
 import { webhookCommand } from "./webhook.ts";
 import { driveCommand } from "./drive.ts";
 import { usageCommand } from "./usage.ts";
+import { settingsCommand } from "./settings.ts";
 import { agentVmSetup } from "./agent-vm.ts";
 import { feedbackCommand } from "./feedback.ts";
 
@@ -166,6 +167,10 @@ ${c.bold("Usage")}
   0b team instructions set <file>  As a team's admin: replace the team's instructions with the file's text
   0b context profile           Edit your profile (who you are, how you like to work)
   0b memory add|search|rm      Things your AIs should remember, searchable from any of them
+  0b settings                  What your AI apps may do with the account: agent control, chat-app webhook
+                               events, chat-app history (on for new accounts), memory, profile
+  0b settings off <name>       Turn agent-control, chat-events or chat-history off (turning on is on the
+                               dashboard, with your passkey)
   0b agent on|off|status       Let your AI apps start and steer coding agents on this machine
   0b agent allow|deny <path>   Repos agents may work in (nothing is allowed until you add one)
   0b agent log [task]          What tasks on this machine did (agent run: the daemon itself)
@@ -787,6 +792,8 @@ async function main() {
       return driveCommand(ctx, rest, { workspace: values.workspace, json: values.json, yes: values.yes, quiet: values.quiet, force: values.force });
     case "usage":
       return usageCommand(ctx, rest, { days: values.days, by: values.by, json: values.json, quiet: values.quiet });
+    case "settings":
+      return settingsCommand(ctx, rest, { json: values.json });
     case "tool":
       return tool(rest);
     case "feedback":

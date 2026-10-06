@@ -91,9 +91,9 @@ ${c.bold("Usage")}
   0b status tools              What's in sync across tools (MCP servers, skills, instructions)
   0b apply [--only t,...]      Write the manifest into each tool (shows a diff, asks first)
         [--yes] [--dry-run]
-  0b apply --only cursor       That tool's 0bridge entry lists three search tools in place of the connected
-        --tool-search auto     services' tools: above 80 of them (auto), always (search), or never (all, the
-                               default). For tools that load every tool at once; kept in the manifest
+  0b apply --only cursor       How that tool's 0bridge entry lists tools: four that find and run the rest
+        --tool-search all      (code, the default; never needs a refresh) or every tool one by one (all,
+                               ?tools=all). Kept in the manifest
   0b mcp list
   0b mcp add <name> --url <url> [--header K=V]... [--only t,...]
   0b mcp add <name> [--env K=V]... [--only t,...] -- <command> [args...]
@@ -171,6 +171,8 @@ ${c.bold("Usage")}
                                events, chat-app history (on for new accounts), memory, profile
   0b settings off <name>       Turn agent-control, chat-events or chat-history off (turning on is on the
                                dashboard, with your passkey)
+  0b settings on|off chat-tool-search
+                               Chat apps (ChatGPT) get a fixed tool list and search the rest: no more refreshes
   0b agent on|off|status       Let your AI apps start and steer coding agents on this machine
   0b agent allow|deny <path>   Repos agents may work in (nothing is allowed until you add one)
   0b agent log [task]          What tasks on this machine did (agent run: the daemon itself)
@@ -367,16 +369,17 @@ function runImport(m: Manifest, only?: ToolId[]) {
 }
 
 /**
- * `--tool-search auto|search|all`: how the named tools' 0bridge entry lists tools, kept in
- * the manifest per tool. For a tool that loads every tool at once (Cursor); Claude Code and Codex
- * search tools themselves, so it's never set for all tools at once.
+ * `--tool-search code|all`: how the named tools' 0bridge entry lists tools, kept in the
+ * manifest per tool. code (the default) is the plain address, four tools that find and run the rest;
+ * all writes `?tools=all`, every tool listed. auto and search are kept as they were written: the
+ * gateway serves them code mode too. Never set for every tool at once.
  */
 function setToolSearch(m: Manifest, only: ToolId[] | undefined, mode: string): void {
-  if (mode !== "auto" && mode !== "search" && mode !== "all") die('--tool-search is auto (search above 80 tools), search (always) or all (list every tool, the default)');
-  if (!only) die(`say which tools get it: ${c.cyan(`0b apply --only cursor --tool-search ${mode}`)} (Claude Code and Codex search tools themselves)`);
+  if (mode !== "code" && mode !== "all" && mode !== "auto" && mode !== "search") die("--tool-search is code (four tools that find and run the rest, the default) or all (every tool listed)");
+  if (!only) die(`say which tools get it: ${c.cyan(`0b apply --only cursor --tool-search ${mode}`)}`);
   for (const t of only) {
     const entry = (m.tools[t] ??= { enabled: true });
-    if (mode === "all") delete entry.toolSearch;
+    if (mode === "code") delete entry.toolSearch;
     else entry.toolSearch = mode;
   }
 }

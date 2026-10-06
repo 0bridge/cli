@@ -26,14 +26,15 @@ export interface SkillEntry {
 }
 
 /**
- * How a tool's 0bridge entry lists tools: "auto" puts three search tools in front of them
- * above 80, "search" always does. Unset: every tool, one by one.
+ * How a tool's 0bridge entry lists tools. Unset: code mode, four tools that find and run the
+ * rest. "all": every tool, one by one (`?tools=all`). "auto" and "search" are code mode too
+ * now; they mean D61's search tools only when the gateway is rolled back (TOOL_SURFACE=legacy).
  */
-export type ToolSearch = "auto" | "search";
+export type ToolSearch = "auto" | "search" | "all";
 
 export interface Manifest {
   version: 1;
-  /** `toolSearch`: `0b apply --only cursor --tool-search auto`, for a tool that loads every tool at once. */
+  /** `toolSearch`: `0b apply --only <tool> --tool-search all`, for a tool that needs every tool listed. */
   tools: Partial<Record<ToolId, { enabled: boolean; toolSearch?: ToolSearch }>>;
   mcpServers: Record<string, McpServer>;
   skills: Record<string, SkillEntry>;

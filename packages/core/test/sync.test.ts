@@ -300,7 +300,11 @@ test("tool search is per tool: only Cursor's 0bridge entry gets ?tools=, and it 
   expect(computeStatus(ctx, m, store).mcp.find((r) => r.name === "0bridge")!.cells.cursor).toBe("ok");
   // Importing again adopts Cursor's copy rather than calling it a conflict.
   expect(importFromTools(ctx, m, loadState(ctx), store).conflicts.filter((x) => x.name === "0bridge")).toEqual([]);
-  // Back to every tool.
+  // Every tool listed: ?tools=all.
+  m.tools.cursor.toolSearch = "all";
+  executePlan(ctx, planApply(ctx, m, loadState(ctx), store));
+  expect(JSON.parse(read(".cursor/mcp.json")).mcpServers["0bridge"].url).toBe("https://0bridge.dev/mcp?tools=all");
+  // Back to the plain address (code mode).
   delete m.tools.cursor.toolSearch;
   executePlan(ctx, planApply(ctx, m, loadState(ctx), store));
   expect(JSON.parse(read(".cursor/mcp.json")).mcpServers["0bridge"].url).toBe("https://0bridge.dev/mcp");

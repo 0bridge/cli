@@ -9,7 +9,7 @@ import { parseSwitches, renderSettings, type AccountSettings } from "../src/sett
 
 const CLI = join(import.meta.dir, "..", "src", "index.ts");
 const plain = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
-const ON: AccountSettings = { chatHistory: true, memory: true, profileInInstructions: true, agentControl: true, chatEvents: true };
+const ON: AccountSettings = { chatHistory: true, memory: true, profileInInstructions: true, agentControl: true, chatEvents: true, chatToolSearch: false };
 
 describe("renderSettings and parseSwitches", () => {
   test("each switch with its state, and how to turn one off or on", () => {
@@ -21,11 +21,21 @@ describe("renderSettings and parseSwitches", () => {
     expect(out).toContain("https://0bridge.test/app/settings/apps");
   });
 
-  test("names: the three switches only, any case, each once", () => {
+  test("names: the three switches and chat-tool-search only, any case, each once", () => {
     expect(parseSwitches(["chat-history", "Agent-Control", "chat-history"])).toEqual(["chatHistory", "agentControl"]);
+    expect(parseSwitches(["chat-tool-search", "Chat-Tool-Search"])).toEqual(["chatToolSearch"]);
     expect(parseSwitches([])).toContain("name one");
     expect(parseSwitches(["memory"])).toContain('unknown setting "memory"');
     expect(parseSwitches(["chatHistory"])).toContain("unknown setting");
+    expect(parseSwitches(["chatToolSearch"])).toContain("unknown setting");
+  });
+
+  test("chat-tool-search is shown, off when a gateway older than it doesn't send it", () => {
+    expect(plain(renderSettings({ ...ON, chatToolSearch: true }, "https://0bridge.test"))).toMatch(/chat-tool-search\s+on\s+Chat apps get a fixed tool list/);
+    const { chatToolSearch: _, ...older } = ON;
+    const out = plain(renderSettings(older, "https://0bridge.test"));
+    expect(out).toMatch(/chat-tool-search\s+off/);
+    expect(out).toContain("0b settings on|off chat-tool-search");
   });
 });
 
@@ -43,7 +53,8 @@ describe("0b settings against the gateway", () => {
       if (url.pathname !== "/api/settings") return Response.json({ error: "not found" }, { status: 404 });
       if (req.method === "PATCH") {
         const b = JSON.parse(body) as Partial<AccountSettings>;
-        if (Object.values(b).some((v) => v === true)) return Response.json({ error: "turn this on from the dashboard", code: "STEP_UP" }, { status: 403 });
+        // As the gateway: turning a guarded switch on needs the dashboard; chat-tool-search doesn't.
+        if (Object.entries(b).some(([k, v]) => v === true && k !== "chatToolSearch")) return Response.json({ error: "turn this on from the dashboard", code: "STEP_UP" }, { status: 403 });
         current = { ...current, ...b };
       }
       return Response.json(current);
@@ -101,5 +112,30 @@ describe("0b settings against the gateway", () => {
     expect((await run("off")).code).toBe(1);
     expect((await run("sideways")).code).toBe(1);
     expect(seen).toEqual([]);
+  }, 30_000);
+
+  test("chat-tool-search turns on and off from here, and says to refresh the app once", async () => {
+    current = { ...ON, chatToolSearch: false };
+    seen.length = 0;
+    const on = await run("on", "chat-tool-search");
+    expect(on.code).toBe(0);
+    expect(on.out).toContain("chat-tool-search is on");
+    expect(on.out).toContain("Refresh 0bridge in the chat app once");
+    expect(current.chatToolSearch).toBe(true);
+    const off = await run("off", "chat-tool-search");
+    expect(off.code).toBe(0);
+    expect(off.out).toContain("chat-tool-search is off");
+    expect(current.chatToolSearch).toBe(false);
+    expect(seen).toEqual(['PATCH /api/settings {"chatToolSearch":true}', 'PATCH /api/settings {"chatToolSearch":false}']);
+  }, 30_000);
+
+  test("on with a guarded switch and chat-tool-search: only chat-tool-search is sent, the other points at the dashboard", async () => {
+    current = { ...ON, chatToolSearch: false };
+    seen.length = 0;
+    const r = await run("on", "agent-control", "chat-tool-search");
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("chat-tool-search is on");
+    expect(r.out).toContain("Turning agent-control on asks for your passkey");
+    expect(seen).toEqual(['PATCH /api/settings {"chatToolSearch":true}']);
   }, 30_000);
 });

@@ -54,6 +54,8 @@ interface SyncState {
   profile: string | null;
   instructions: string | null;
   skills: Record<string, string>;
+  /** A document removed on 0bridge while unchanged here: its hash then. It stays here and isn't sent again until it changes. */
+  gone?: Partial<Record<DocName, string>>;
   lastSync?: number;
 }
 const statePath = (ctx: Context) => join(ctx.storeDir, "context.json");
@@ -139,9 +141,15 @@ export async function planContext(ctx: Context, client: CloudClient, userId: str
   const doc = (kind: DocName, label: string, path: string, r: ContextDoc | null) => {
     const text = localDoc(path);
     const local = text === null ? null : sha256Hex(text);
-    let action = planSync(local, r?.hash ?? null, state[kind]);
-    // A document isn't deleted on 0bridge: missing there (a new account) means push it again.
+    // Removed on 0bridge once this machine knew it, and unchanged here since (run's gone()): that copy
+    // is the base, so one written there again since comes down (a pull), not a conflict.
+    const base = state[kind] ?? (local !== null && local === state.gone?.[kind] ? local : null);
+    let action = planSync(local, r?.hash ?? null, base);
+    // A document isn't deleted by sync: missing there (a new account, or removed in Drive) means push
+    // it (refused with the old base, which run's gone() turns into keeping it here).
     if (action === "delete-local") action = "push";
+    // Removed on 0bridge once this machine knew it, and not changed here since (run's gone()).
+    if (action === "push" && !r && local === state.gone?.[kind]) action = "none";
     items.push({ kind, name: kind, label, local, remote: r?.hash ?? null, base: state[kind], action });
   };
   doc("profile", tilde(ctx, p.profile), p.profile, remote.profile);
@@ -164,6 +172,12 @@ export async function planContext(ctx: Context, client: CloudClient, userId: str
     items.push({ kind: "skill", name, label: `skill ${name}`, local, remote: r, base, action, ...(held ? { held } : {}) });
   }
   return { items, remote, state };
+}
+
+/** A change 0bridge keeps as a proposal for the owner (gateway context-drive.ts Waiting). */
+interface Waiting {
+  id: string;
+  path: string;
 }
 
 /** Write 0bridge's copy next to this machine's: `<file>.0bridge-remote`, or a skill under skills/.0bridge-remote/. */
@@ -197,8 +211,8 @@ async function writeSkill(client: CloudClient, dir: string, name: string): Promi
 
 type Mode = "push" | "pull" | "sync";
 
-/** Do what the plan says for `mode`. `force`: this side wins (push) or 0bridge's does (pull). */
-async function run(ctx: Context, client: CloudClient, userId: string, plan: ContextPlan, mode: Mode, force = false): Promise<Report> {
+/** Do what the plan says for `mode`. `force`: this side wins (push) or 0bridge's does (pull). Exported for its tests. */
+export async function run(ctx: Context, client: CloudClient, userId: string, plan: ContextPlan, mode: Mode, force = false): Promise<Report> {
   const p = contextPaths(ctx);
   const { state } = plan;
   const res: Report = { pushed: [], pulled: [], removed: [], conflicts: [], waiting: [], notes: [] };
@@ -208,7 +222,10 @@ async function run(ctx: Context, client: CloudClient, userId: string, plan: Cont
     if (it.kind === "skill") {
       if (hash) state.skills[it.name] = hash;
       else delete state.skills[it.name];
-    } else state[it.kind] = hash;
+    } else {
+      state[it.kind] = hash;
+      if (state.gone?.[it.kind]) delete state.gone[it.kind];
+    }
   };
 
   const pull = async (it: Item) => {
@@ -227,11 +244,11 @@ async function run(ctx: Context, client: CloudClient, userId: string, plan: Cont
     res.pulled.push(it.label);
   };
 
-  /** Upload; a 409 (someone changed it since) becomes a conflict copy. `base` undefined overwrites. */
-  const push = async (it: Item, base: string | null | undefined) => {
+  /** Upload; a 409 (someone changed it since) becomes a conflict copy, or see gone(). `base` undefined overwrites; `note` is reported once it's up. */
+  const push = async (it: Item, base: string | null | undefined, note?: string): Promise<void> => {
     if (it.kind === "skill") {
       const s = readSkill(join(p.skills, it.name), it.name)!;
-      let r: ContextSkillMeta | { error: string; current: ContextSkillMeta | null };
+      let r: ContextSkillMeta | { error: string; current: ContextSkillMeta | null; waiting?: Waiting[] };
       try {
         r = await client.call("PUT", `/context/skills/${encodeURIComponent(it.name)}`, { body: s.body, files: s.files, ...(base === undefined ? {} : { base }) }, [409]);
       } catch (e) {
@@ -240,9 +257,11 @@ async function run(ctx: Context, client: CloudClient, userId: string, plan: Cont
         res.notes.push(`${it.label} stays on this machine: ${e.message}`);
         return;
       }
-      if ("error" in r) return conflict(it);
+      if ("waiting" in r && r.waiting) return held(it);
+      if ("error" in r) return r.current ? conflict(it) : gone(it, base, r.error);
       remember(it, r.hash);
       res.pushed.push(it.label);
+      if (note) res.notes.push(note);
       for (const f of s.skipped) res.notes.push(`${it.label}: ${f.path} stays on this machine (${f.why})`);
       return;
     }
@@ -251,10 +270,55 @@ async function run(ctx: Context, client: CloudClient, userId: string, plan: Cont
       res.notes.push(`${it.label} has ${text.length.toLocaleString("en")} characters; 0bridge keeps at most ${PROFILE_MAX.toLocaleString("en")}. Shorten it, then ${c.cyan("0b context push")}`);
       return;
     }
-    const r = await client.call<ContextDoc | { error: string; current: ContextDoc | null }>("PUT", `/context/${it.kind}`, { text, ...(base === undefined ? {} : { base }) }, [409]);
-    if ("error" in r) return conflict(it, r.current?.text);
+    const r = await client.call<ContextDoc | { error: string; current: ContextDoc | null; waiting?: Waiting[] }>("PUT", `/context/${it.kind}`, { text, ...(base === undefined ? {} : { base }) }, [409]);
+    if ("waiting" in r && r.waiting) return held(it);
+    if ("error" in r) return r.current ? conflict(it, r.current.text) : gone(it, base, r.error);
     remember(it, r.hash);
     res.pushed.push(it.label);
+    if (note) res.notes.push(note);
+  };
+
+  /**
+   * A 409 with `current: null`: 0bridge has no copy, so there's nothing to fetch for a conflict copy.
+   * Pushed on a base (a hash), it was removed there since this machine's last sync: unchanged here,
+   * the removal wins (a skill goes here too; a document stays, isn't sent again until it changes,
+   * and its base is cleared); changed here, this machine's copy goes up again as new (base null).
+   * Pushed as new or overwriting (base null or undefined), it was refused outright: a conflict
+   * without a copy. Either way the sync goes on and saves its state.
+   */
+  const gone = async (it: Item, base: string | null | undefined, error: string) => {
+    if (!base) {
+      // Not a conflict copy to merge: nothing is there to merge with, and --force wouldn't change a refusal.
+      res.notes.push(`${it.label} isn't on 0bridge, and sending this machine's copy was refused: ${error}`);
+      return;
+    }
+    if (it.local !== it.base) return push(it, null, `${it.label} had been removed on 0bridge; this machine's changed copy went up again`);
+    if (it.kind === "skill") return removeHere(it);
+    remember(it, null);
+    state.gone = { ...state.gone, [it.kind]: it.local! };
+    res.notes.push(`${it.label} was removed on 0bridge; this machine's copy stays, and goes up again only once you change it`);
+  };
+
+  /** Removed on 0bridge and unchanged here: the skill goes here too (a push only reports it). */
+  const removeHere = (it: Item) => {
+    if (mode === "push") {
+      res.waiting.push(`${it.label} ${c.dim("(removed on 0bridge)")}`);
+      return;
+    }
+    rmSync(join(p.skills, it.name), { recursive: true, force: true });
+    if (m?.skills[it.name]) (delete m.skills[it.name], (manifestChanged = true));
+    remember(it, null);
+    res.removed.push(it.label);
+  };
+
+  /**
+   * 0bridge keeps it as a proposal for the owner (this is an agent's computer, and Drive is the
+   * source): nothing changed there, so this machine's copy and its sync base stay as they are, and
+   * the next sync sends it again, which 0bridge recognizes as the same proposal (one the owner
+   * rejected comes back as a conflict, not as a new proposal).
+   */
+  const held = (it: Item) => {
+    res.notes.push(`${it.label} waits for your approval in 0bridge's Drive (Drive → Proposals); nothing changed there yet`);
   };
 
   const conflict = async (it: Item, remoteText?: string) => {
@@ -273,14 +337,7 @@ async function run(ctx: Context, client: CloudClient, userId: string, plan: Cont
       continue;
     }
     if (a === "delete-local") {
-      if (mode === "push") {
-        res.waiting.push(`${it.label} ${c.dim("(removed on 0bridge)")}`);
-        continue;
-      }
-      rmSync(join(p.skills, it.name), { recursive: true, force: true });
-      if (m?.skills[it.name]) (delete m.skills[it.name], (manifestChanged = true));
-      remember(it, null);
-      res.removed.push(it.label);
+      removeHere(it);
       continue;
     }
     if (a === "pull" || (a === "conflict" && mode === "pull" && force)) {
@@ -334,7 +391,7 @@ async function status(ctx: Context, client: CloudClient, userId: string): Promis
     return;
   }
   for (const it of shown) {
-    const where = it.held === "ask" ? c.yellow("new here, not uploaded — `0b skill share` or `0b skill local`") : it.held === "local" ? c.dim("kept on this machine") : it.local === null ? c.yellow("only on 0bridge — `0b context pull`") : it.remote === null && it.action === "push" ? c.yellow("only here — `0b context push`") : it.action === "same" ? c.green("synced") : c.yellow(STATE_LABEL[it.action]);
+    const where = it.held === "ask" ? c.yellow("new here, not uploaded — `0b skill share` or `0b skill local`") : it.held === "local" ? c.dim("kept on this machine") : it.local === null ? c.yellow("only on 0bridge — `0b context pull`") : it.remote === null && it.action === "push" ? c.yellow("only here — `0b context push`") : it.remote === null && it.action === "none" ? c.dim("removed on 0bridge, kept here — change it to send it again") : it.action === "same" ? c.green("synced") : c.yellow(STATE_LABEL[it.action]);
     console.log(`  ${it.label.padEnd(36)} ${where}`);
   }
   const n = plan.remote.memory.count;
@@ -373,7 +430,12 @@ async function confirm(q: string): Promise<boolean> {
 /** Remove a skill everywhere: from 0bridge, from this machine, and (on their next sync) from the others. */
 async function removeSkill(ctx: Context, client: CloudClient, userId: string, name: string, opts: ContextOptions): Promise<void> {
   if (!opts.yes && !(await confirm(`Remove the skill ${name} from 0bridge, this machine and your other machines?`))) fail("not removed (pass --yes to remove without asking)");
-  const r = await client.call<{ deleted?: boolean; error?: string }>("DELETE", `/context/skills/${encodeURIComponent(name)}`, undefined, [404]);
+  const r = await client.call<{ deleted?: boolean; error?: string; waiting?: Waiting[] }>("DELETE", `/context/skills/${encodeURIComponent(name)}`, undefined, [404]);
+  // Waiting for the owner's approval (an agent's computer, Drive the source): nothing is removed yet.
+  if (r.waiting) {
+    console.log(`Removing the skill ${name} waits for your approval in 0bridge's Drive (Drive → Proposals). It stays here and on your machines until then.`);
+    return;
+  }
   const dir = join(contextPaths(ctx).skills, name);
   const here = existsSync(dir);
   rmSync(dir, { recursive: true, force: true });

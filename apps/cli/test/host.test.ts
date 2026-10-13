@@ -119,6 +119,7 @@ describe("0b host against the gateway", () => {
     bridge__host_updates: { json: { result: { content: [{ type: "text", text: "Nothing new from the host. cursor=9" }], structuredContent: { updates: [], cursor: "9", more: false } } } },
     bridge__host_status: { status: 401, json: { error: "invalid_token" } },
   };
+  let legacy = false;
   const server = Bun.serve({
     port: 0,
     async fetch(req) {
@@ -126,7 +127,11 @@ describe("0b host against the gateway", () => {
       if (url.pathname !== "/mcp" || req.method !== "POST") return Response.json({ error: "not found" }, { status: 404 });
       const body = (await req.json()) as (typeof seen)[number]["body"];
       seen.push({ headers: req.headers, body });
-      const a = answers[body.params.name]!;
+      // As the gateway in code mode: execute_write runs the tool it names; without code mode (legacy), there's no such tool.
+      const through = body.params.name === "bridge__execute_write";
+      // The gateway's own words (mcp.ts) when it has no such tool.
+      if (through && legacy) return Response.json({ jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: "Unknown tool bridge__execute_write. It may have been disconnected; list tools again." }], isError: true } });
+      const a = answers[through ? String(body.params.arguments.tool) : body.params.name]!;
       const rpc = { jsonrpc: "2.0", id: 1, ...(a.json as object) };
       if (a.sse) return new Response(`event: message\ndata: ${JSON.stringify(rpc)}\n\n`, { headers: { "content-type": "text/event-stream" } });
       return Response.json(a.status ? a.json : rpc, { status: a.status ?? 200 });
@@ -152,25 +157,41 @@ describe("0b host against the gateway", () => {
     return { code: await p.exited, out, err };
   };
 
-  test("request from stdin: one tools/call by name with the token, the 2026-07-28 envelope and headers; the id first", async () => {
+  test("request from stdin: one tools/call through bridge__execute_write with the token, the 2026-07-28 envelope and headers; the id first", async () => {
     const r = await run(["request", "-", "--project", "0bridge"], "결제 페이지 고쳐줘\n");
     expect(r.code).toBe(0);
     expect(r.out.split("\n")[0]).toBe("hr_abcdefghjk");
     const s = seen.at(-1)!;
     expect(s.headers.get("authorization")).toBe("Bearer 0b_vmtoken");
     expect(s.headers.get("mcp-method")).toBe("tools/call");
-    expect(s.headers.get("mcp-name")).toBe("bridge__host_request");
+    expect(s.headers.get("mcp-name")).toBe("bridge__execute_write");
     expect(s.headers.get("mcp-protocol-version")).toBe("2026-07-28");
     expect(s.body.method).toBe("tools/call");
-    expect(s.body.params.arguments).toEqual({ request: "결제 페이지 고쳐줘", project: "0bridge" });
+    expect(s.body.params.arguments).toEqual({ tool: "bridge__host_request", arguments: { request: "결제 페이지 고쳐줘", project: "0bridge" } });
     expect(s.body.params._meta).toMatchObject({ "io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientInfo": { name: "0b host" } });
+  });
+
+  test("a gateway without bridge__execute_write (no code mode): the send goes again by name, once; reads always go by name", async () => {
+    legacy = true;
+    try {
+      const before = seen.length;
+      const r = await run(["request", "fix the invoice page"]);
+      expect(r.code).toBe(0);
+      expect(seen.slice(before).map((s) => s.body.params.name)).toEqual(["bridge__execute_write", "bridge__host_request"]);
+      expect(seen.at(-1)!.body.params.arguments).toEqual({ request: "fix the invoice page" });
+      const u = seen.length;
+      await run(["updates", "--cursor", "8"]);
+      expect(seen.slice(u).map((s) => s.body.params.name)).toEqual(["bridge__host_updates"]);
+    } finally {
+      legacy = false;
+    }
   });
 
   test("a tool's refusal: printed plainly on stderr, exit 1; --json still prints {ok: false}", async () => {
     const r = await run(["answer", "45", "--task", "T-012", "B"]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("reaches only a machine whose supervisor is the work ledger");
-    expect(seen.at(-1)!.body.params.arguments).toEqual({ question: "45", task: "T-012", text: "B" });
+    expect(seen.at(-1)!.body.params.arguments).toEqual({ tool: "bridge__host_answer", arguments: { question: "45", task: "T-012", text: "B" } });
     const j = await run(["answer", "45", "--task", "T-012", "B", "--json"]);
     expect(j.code).toBe(1);
     expect(JSON.parse(j.out)).toMatchObject({ ok: false, data: null });

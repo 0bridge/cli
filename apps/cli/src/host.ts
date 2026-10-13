@@ -4,8 +4,8 @@ import { cloudClient } from "./cloud.ts";
 
 /**
  * `0b host`: hand work to the user's dev machine from any terminal (an agent's computer such as a
- * Dots VM, or a laptop), through the same bridge__host_* tools a chat app calls, by name on the
- * gateway's /mcp with this device's token. On the dev machine `0b agent supervisor ledger` writes
+ * Dots VM, or a laptop), through the same bridge__host_* tools a chat app calls, on the gateway's
+ * /mcp with this device's token: changes through bridge__execute_write, reads by name (sendHost). On the dev machine `0b agent supervisor ledger` writes
  * a request as a dev_request, a follow-up as a user_followup and an answer as a user_decision
  * into its work ledger. An agent computer's token (`0b setup --agent-vm`) reaches only such a
  * ledger machine; the gateway refuses one on OpenClaw. `--key` gives a send the caller's own
@@ -208,6 +208,24 @@ async function readAll(): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
+/** The sends that change something (the rest only read). */
+const WRITES = new Set(["bridge__host_request", "bridge__host_followup", "bridge__host_answer"]);
+/** A gateway's answer when it has no bridge__execute_write (not code mode), from the start of its text. */
+const NO_EXECUTE_WRITE = /^(Unknown tool|No tool named):? bridge__execute_write\b/;
+
+/**
+ * A send through bridge__execute_write, as any app's change goes in code mode: a gateway that refuses
+ * a write called by its own name (DIRECT_WRITES=refuse) still takes it, and one that records them
+ * (dispatch) doesn't count it as one. A gateway without it (no code mode) is sent the name, once:
+ * nothing ran. Reads go by name.
+ */
+export async function sendHost(call: { tool: string; args: Record<string, unknown> }, callTool: (name: string, args: Record<string, unknown>) => Promise<McpToolResult>): Promise<McpToolResult> {
+  if (!WRITES.has(call.tool)) return callTool(call.tool, call.args);
+  const r = await callTool("bridge__execute_write", { tool: call.tool, arguments: call.args });
+  const said = r.content.map((c) => c.text ?? "").join("\n").trim();
+  return r.isError && NO_EXECUTE_WRITE.test(said) ? callTool(call.tool, call.args) : r;
+}
+
 /** `0b host …`: exits 1 on a refusal, 2 on a usage mistake. */
 export async function hostCommand(ctx: Context, argv: string[], version = "dev"): Promise<void> {
   let call: HostCall | null;
@@ -221,7 +239,8 @@ export async function hostCommand(ctx: Context, argv: string[], version = "dev")
   if (!call) return console.log(HOST_USAGE);
   let r: McpToolResult;
   try {
-    r = await cloudClient(ctx).client.callTool(call.tool, call.args, { name: "0b host", version });
+    const client = cloudClient(ctx).client;
+    r = await sendHost(call, (name, args) => client.callTool(name, args, { name: "0b host", version }));
   } catch (e) {
     const msg = e instanceof CloudError || e instanceof Error ? e.message : String(e);
     if (call.json) console.log(JSON.stringify({ ok: false, text: msg, data: null }, null, 2));

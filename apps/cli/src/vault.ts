@@ -183,16 +183,36 @@ async function requestApproval(client: CloudClient, scope: string, env: string, 
   const g = await client.requestGrant(scope, env, reason, ask);
   console.error(`${c.yellow("●")} ${c.bold(env)} secrets need your approval. Code ${c.bold(g.code)}. Approve in your browser:\n  ${c.cyan(g.url)}`);
   openBrowser(g.url);
+  const until = await waitForGrant(client, g, env);
+  const mins = until ? Math.round((until - Date.now()) / 60_000) : 0;
+  console.error(`${c.green("✓")} approved${mins ? ` for ${mins} minutes` : ""}`);
+}
+
+/**
+ * Polls an approval request every 2 s until the user decides; the approval's end time. A server
+ * error (5xx) or a dropped connection while waiting isn't an answer: polling goes on until the
+ * request expires (2026-10-13, T-009: one 500 on a poll ended a wait the user then approved).
+ */
+export async function waitForGrant(
+  client: Pick<CloudClient, "grant">,
+  g: { id: string; expiresAt: number },
+  env: string,
+  pause = (ms: number) => new Promise((r) => setTimeout(r, ms)),
+  now = () => Date.now(),
+): Promise<number | null> {
   for (;;) {
-    await new Promise((r) => setTimeout(r, 2000));
-    const { status, until } = await client.grant(g.id);
-    if (status === "approved") {
-      const mins = until ? Math.round((until - Date.now()) / 60_000) : 0;
-      console.error(`${c.green("✓")} approved${mins ? ` for ${mins} minutes` : ""}`);
-      return;
+    await pause(2000);
+    let answer: Awaited<ReturnType<CloudClient["grant"]>>;
+    try {
+      answer = await client.grant(g.id);
+    } catch (e) {
+      const passing = e instanceof CloudError && (e.status === 0 || e.status >= 500);
+      if (!passing || now() > g.expiresAt) throw e;
+      continue;
     }
-    if (status === "denied") throw new Error(`${env} access was denied in the browser`);
-    if (status === "expired" || Date.now() > g.expiresAt) throw new Error(`the ${env} approval wasn't given in time; run the command again`);
+    if (answer.status === "approved") return answer.until;
+    if (answer.status === "denied") throw new Error(`${env} access was denied in the browser`);
+    if (answer.status === "expired" || now() > g.expiresAt) throw new Error(`the ${env} approval wasn't given in time; run the command again`);
   }
 }
 

@@ -11,6 +11,8 @@ export type {
   HostAnswerStatus,
   HostContextReply,
   HostCursorFrame,
+  HostDeliveredItem,
+  HostDeliveredReply,
   HostDeliveryState,
   HostEvent,
   HostEventsFrame,
@@ -25,7 +27,7 @@ export type {
   HostTask,
   HostVia,
 } from "@0bridge/core/host";
-export { HOST_BATCH_MAX, HOST_CONTEXT_KEY, HOST_REQUEST_ID, HOST_RESET_ID, HOST_TEXT_MAX, isHostAck, newHostAck, parseChoices } from "@0bridge/core/host";
+export { deliveredRef, HOST_BATCH_MAX, HOST_CONTEXT_KEY, HOST_DELIVERED_MAX, HOST_REQUEST_ID, HOST_RESET_ID, HOST_TEXT_MAX, isHostAck, newHostAck, parseChoices } from "@0bridge/core/host";
 
 /**
  * The frames between a machine's daemon and the machine hub (spec 6.6): JSON text, version 1.

@@ -285,6 +285,10 @@ describe("agent daemon", () => {
     const l = (await s.req({ op: "host.request", requestId: "hr_daemon0002", text: "Tidy the docs", title: "docs" })) as { task: null; dispatch: string; receipt: { event: number } };
     expect([l.task, l.dispatch, host.events("dev_request").map((e) => e.id)]).toEqual([null, "recorded", [l.receipt.event]]);
     expect(Object.keys(host.db().tasks)).toEqual(["T-001"]);
+    // A delivery receipt reaches the ledger through the daemon too (an older one said "unknown op").
+    const handoff = host.emit("primary_handoff", "T-001", "README 정리했습니다.")!;
+    expect(await s.req({ op: "host.delivered", events: [handoff], ref: "ChatGPT via 0bridge · 2026-10-13 17:31 KST · hd_abcdefghjk" })).toMatchObject({ results: [{ event: handoff, status: "recorded" }] });
+    expect(host.events("primary_delivered").map((e) => e.data.event)).toEqual([handoff]);
     // Agent control off: no host in the hello, and host requests are refused.
     saveAgentConfig(s.ctx, { enabled: false, repos: [], supervisor });
     expect((await s.daemon.hello()).host).toBeUndefined();

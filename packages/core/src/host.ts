@@ -194,6 +194,13 @@ export type HostOp = (
   | { op: "host.lookup"; task?: string; question?: number; request?: string }
   /** Outside context for a task's existing worker, through the supervisor (docs/plans/dots-host.md, "Outside context"). */
   | { op: "host.context"; id: string; task: string; dedupe: string; provider: HostProvider; text: string; ack?: string }
+  /**
+   * Ledger mode only: the user was shown these primary_handoff events (the team's messages and
+   * questions) in their app; each gets `host-task delivered <event> --channel=dots --ref=<ref>`. `ref`
+   * is the hub's: the app's name, the time and the call's id. Added in CLI 0.2.40; older daemons
+   * answer "unknown op".
+   */
+  | { op: "host.delivered"; events: number[]; ref: string }
 ) & {
   /**
    * Added for D74 (an agent computer's token, `0b host`): take this op only while this machine's
@@ -300,6 +307,28 @@ export interface HostAnswerReply {
   current?: number | null;
   /** recorded: the user_decision event. */
   event?: number | null;
+}
+/** Events in one host.delivered, at most. */
+export const HOST_DELIVERED_MAX = 50;
+/** A delivery-receipt caller's own ref (a conversation link), at most (characters). */
+export const HOST_DELIVERED_REF_MAX = 200;
+/** A caller's ref as one line, control characters gone; null when it isn't text. */
+export const deliveredRef = (v: unknown): string | null => (typeof v === "string" ? v.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim() : null);
+/**
+ * One event's delivery receipt: recorded (host-task's primary_delivered event is `receipt`),
+ * duplicate (it had one already, which is a success: the receipt is there), refused (not a
+ * primary_handoff, as host-task or the hub says) or failed (anything else; why in detail).
+ */
+export type HostDeliveredStatus = "recorded" | "duplicate" | "refused" | "failed";
+export interface HostDeliveredItem {
+  event: number;
+  status: HostDeliveredStatus;
+  /** recorded: host-task's primary_delivered event. */
+  receipt?: number | null;
+  detail: string;
+}
+export interface HostDeliveredReply {
+  results: HostDeliveredItem[];
 }
 export interface HostStatusReply {
   tasks: HostTask[];

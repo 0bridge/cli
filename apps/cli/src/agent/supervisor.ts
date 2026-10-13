@@ -191,6 +191,14 @@ export class HostTaskClient {
   answer(question: number, text: string): Promise<{ event: number | null }> {
     return this.run(["answer", String(question), `--text=${argText(text)}`]);
   }
+  /**
+   * A primary_handoff reached the user: host-task records primary_delivered under
+   * `delivered:<event>`. It refuses another kind of event, an empty ref and a second receipt.
+   */
+  delivered(event: number, channel: "dots" | "telegram", ref: string): Promise<{ event: number; receipt: number | null }> {
+    if (!Number.isSafeInteger(event) || event <= 0) return Promise.reject(new HostTaskError(`bad event id ${event}`));
+    return this.run(["delivered", String(event), `--channel=${channel}`, `--ref=${argText(ref)}`]);
+  }
 }
 
 const str = (v: unknown): string | null => (typeof v === "string" && v ? v : typeof v === "number" ? String(v) : null);
@@ -462,6 +470,8 @@ export interface SupervisorOptions {
   /** Tests: shorter waits. */
   retryMs?: number[];
   ackMs?: number;
+  /** Tests: how long one host.delivered may spend before the rest of its events are left for another call. */
+  deliveredMs?: number;
   answer?: Partial<AnswerTimings>;
   /** host-task's environment (the contract test points HOST_TASK_DB at a temp file); else this process's. */
   hostTaskEnv?: NodeJS.ProcessEnv;
@@ -569,6 +579,7 @@ export class HostSupervisor {
             logEnd: async () => this.state.cursor ?? (await this.endOfLog()),
             stopped: () => this.stopped,
             retryMs: this.retryMs,
+            ...(opts.deliveredMs !== undefined ? { deliveredMs: opts.deliveredMs } : {}),
           })
         : null;
     this.timer = setInterval(() => void this.tick(), cfg.pollMs);
@@ -775,6 +786,8 @@ export class HostSupervisor {
           return this.ledger.followup(m);
         case "host.answer":
           return this.ledger.answer(m);
+        case "host.delivered":
+          return this.ledger.delivered(m);
         case "host.questions":
           // The team's questions (devlead's [선택지] handoffs) reach the hub from the log, which keeps
           // them open; workers' own questions are the team's to handle, not the user's.
@@ -801,6 +814,9 @@ export class HostSupervisor {
         return this.lookup(m);
       case "host.context":
         return this.context(m);
+      case "host.delivered":
+        // A delivery receipt is a ledger record: an OpenClaw machine keeps none.
+        throw new Error("delivery receipts go only into a work ledger; this machine's supervisor is OpenClaw (0b agent supervisor ledger there)");
       default:
         throw new Error(`unknown op ${(m as { op?: string }).op}`);
     }

@@ -9,8 +9,9 @@ import { fakeBin } from "./fake-bin.ts";
  *
  * - host-task: the real script's rules (~/projects/infra/scripts/host-task): T-NNN numbering,
  *   `set status=completed` needs evidence, `emit` ignores a repeated dedupe key, `answer` only for
- *   the task's current question and once, `events --since --limit` paging. It never reads
- *   HOST_TASK_DB: a developer's real database is never touched.
+ *   the task's current question and once, `delivered` only for a primary_handoff, with a ref and
+ *   once, `events --since --limit` paging. It never reads HOST_TASK_DB: a developer's real
+ *   database is never touched.
  * - herdr: scripted panes for `agent list`, `pane send-text`, `pane send-keys`, `agent prompt`
  *   (refusing a blocked agent, as herdr does) and `agent wait`. Typing Enter into a blocked pane
  *   (or prompting an idle one) makes it `working`, unless the pane is scripted `stuck`.
@@ -82,7 +83,7 @@ for (let i = 1; i < argv.length; i++) {
   else pos.push(a);
 }
 const cmd = argv[0];
-if (cmd === "--help" || cmd === "-h") { console.log("usage: host-task {create,set,show,list,events,emit,answer,import-board} ..."); process.exit(0); }
+if (cmd === "--help" || cmd === "-h") { console.log("usage: host-task {create,set,show,list,events,emit,answer,delivered,import-board} ..."); process.exit(0); }
 const out = locked(DB, () => {
   const db = load(DB, { tasks: {}, events: [], seq: 0 });
   const now = Date.now() / 1000;
@@ -132,6 +133,17 @@ const out = locked(DB, () => {
     const task = get(row.task);
     if (task.pending_question_event !== qid) fail("question is no longer current");
     result = { event: emit("answer_pending", row.task, { question_event: qid, text: opt.text, target: row.data.pane, delivery: "pending_supervisor" }, "answer:" + qid) };
+  } else if (cmd === "delivered") {
+    // A scripted failure (a locked database), once.
+    if (fs.existsSync(DIR + "/fail-delivered")) { fs.rmSync(DIR + "/fail-delivered"); fail("database is locked"); }
+    const eid = Number(pos[0]);
+    if (!["dots", "telegram"].includes(opt.channel)) fail("argument --channel: invalid choice");
+    const row = db.events.find((e) => e.id === eid);
+    if (!row || row.kind !== "primary_handoff") fail("not a primary_handoff event");
+    if (!(opt.ref || "").trim()) fail("delivered requires --ref (the delivered message id or link)");
+    const rid = emit("primary_delivered", row.task, { event: eid, channel: opt.channel, ref: opt.ref, at: now }, "delivered:" + eid);
+    if (rid === null) fail("event " + eid + " already has a delivery receipt");
+    result = { event: eid, receipt: rid };
   } else fail("unknown command " + cmd);
   store(DB, db);
   return result;
@@ -374,6 +386,10 @@ export function fakeHost(dir: string, o: { panes?: FakePane[]; openclaw?: { slee
     /** The next `n` one-event lookups (`events --limit=1`, how a question is read back) fail. */
     failOneEventLookups(n: number): void {
       writeFileSync(join(dir, "fail-one-event"), String(n));
+    },
+    /** The next `delivered` fails (a locked database). */
+    failNextDelivered(): void {
+      writeFileSync(join(dir, "fail-delivered"), "");
     },
     panes: () => read<FakePane[]>(panesFile, []),
     pane: (id: string) => read<FakePane[]>(panesFile, []).find((p) => p.pane === id),

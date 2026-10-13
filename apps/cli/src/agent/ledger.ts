@@ -1,4 +1,4 @@
-import { HOST_REQUEST_ID, type HostAnswerReply, type HostChoice, type HostFollowupReply, type HostOp, type HostRequestReply, type HostVia } from "./protocol.ts";
+import { deliveredRef, HOST_DELIVERED_MAX, HOST_REQUEST_ID, type HostAnswerReply, type HostChoice, type HostDeliveredItem, type HostDeliveredReply, type HostFollowupReply, type HostOp, type HostRequestReply, type HostVia } from "./protocol.ts";
 import { HOST_TASK_ID, HostTaskError, parseHostEvent, parseHostTask, type HostTaskClient, type RawHostEvent, type SupervisorState } from "./supervisor.ts";
 
 /**
@@ -13,7 +13,8 @@ import { HOST_TASK_ID, HostTaskError, parseHostEvent, parseHostTask, type HostTa
  * each with the user's words exactly, then a source line (`출처: ChatGPT via 0bridge · <KST> ·
  * 요청 hr_…`), under a dedupe key, so a retry or a restart records nothing twice. herdr-watch
  * wakes the team's supervisor (devlead) for these kinds. No task is made, no agent run, nothing
- * typed into a pane, no OpenClaw.
+ * typed into a pane, no OpenClaw. The other way, when the user's app has shown them the team's
+ * messages (primary_handoff), host-task's own delivery receipt (`host-task delivered`, D81).
  *
  * Linking: the request id travels in the dev_request's source line. When the team makes the task
  * and keeps the id in what it records (the contract's source, the title, a note), the first later
@@ -113,7 +114,15 @@ export interface LedgerDeps {
   stopped: () => boolean;
   /** The pauses between a crash-left record's tries. */
   retryMs: number[];
+  /** How long one host.delivered may spend (DELIVERED_MS; tests: shorter). */
+  deliveredMs?: number;
 }
+
+/**
+ * One host.delivered's time, at most: the events after it are left for another call, well inside
+ * the hub's 15 s wait for the reply (one host-task run per event, one at a time).
+ */
+export const DELIVERED_MS = 10_000;
 
 export class LedgerMode {
   /** Records being written now, by key: a second call for one waits for the first. */
@@ -217,6 +226,44 @@ export class LedgerMode {
       await this.recordAnswer(a, true);
       return answered(a);
     });
+  }
+
+  /**
+   * The user was shown these team messages (primary_handoff events) in their app: each gets
+   * host-task's delivery receipt, `host-task delivered <event> --channel=dots --ref=<ref>`, one at
+   * a time, for up to DELIVERED_MS (the rest come back failed, "not tried"). Chat apps reaching the
+   * user through 0bridge are the Dots channel to host-task (it knows dots and telegram); the ref
+   * names the actual app. host-task decides: a receipt it already has
+   * is a duplicate (still a success), an event that isn't a primary_handoff is refused. Nothing
+   * else is recorded, typed or sent.
+   */
+  async delivered(m: Extract<HostOp, { op: "host.delivered" }>): Promise<HostDeliveredReply> {
+    const events = Array.isArray(m.events) ? [...new Set(m.events)] : [];
+    if (!events.length || events.length > HOST_DELIVERED_MAX || !events.every((e) => Number.isSafeInteger(e) && e > 0)) throw new Error(`bad event ids (1 to ${HOST_DELIVERED_MAX} host event ids)`);
+    const ref = (deliveredRef(m.ref) ?? "").slice(0, 500);
+    if (!ref) throw new Error("empty ref");
+    const results: HostDeliveredItem[] = [];
+    // The first is always tried; once the time is up, the rest are left for another call (the hub's wait is 15 s).
+    const until = Date.now() + (this.d.deliveredMs ?? DELIVERED_MS);
+    for (const event of events) {
+      if (results.length && Date.now() >= until) {
+        results.push({ event, status: "failed", detail: "not tried (time ran out); ask again" });
+        continue;
+      }
+      try {
+        const out = await this.d.host.delivered(event, "dots", ref);
+        const receipt = typeof out?.receipt === "number" ? out.receipt : null;
+        results.push({ event, status: "recorded", receipt, detail: `delivery receipt recorded (primary_delivered${receipt !== null ? `, host event #${receipt}` : ""})` });
+      } catch (e) {
+        const why = this.d.mask((e as Error).message).replace(/\s+/g, " ").slice(0, 200);
+        if (/already has a delivery receipt/.test(why)) results.push({ event, status: "duplicate", detail: "it already had a delivery receipt" });
+        else if (/not a primary_handoff event/.test(why)) results.push({ event, status: "refused", detail: "not a team message (host-task: not a primary_handoff event)" });
+        else results.push({ event, status: "failed", detail: why || "host-task failed" });
+      }
+    }
+    const n = (s: string) => results.filter((r) => r.status === s).length;
+    this.d.log(`host: delivery receipts for ${events.length} event(s): ${n("recorded")} recorded, ${n("duplicate")} duplicate, ${n("refused")} refused, ${n("failed")} failed`);
+    return { results };
   }
 
   private recordRequest(r: LedgerRequest, fresh: boolean) {

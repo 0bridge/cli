@@ -219,7 +219,8 @@ export class Daemon {
       case "host.status":
       case "host.questions":
       case "host.lookup":
-      case "host.context": {
+      case "host.context":
+      case "host.delivered": {
         this.enabled();
         const sup = this.supervisor();
         if (!sup) throw new Error(`no supervisor is set up on ${machineName()} (0b agent supervisor ledger, or openclaw --agent <id>, there)`);

@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { parseChoices } from "@0bridge/core/host";
-import type { HostAnswerReply, HostContextReply, HostEventsFrame, HostFollowupReply, HostLookupReply, HostRequestReply } from "../src/agent/protocol.ts";
+import type { HostAnswerReply, HostContextReply, HostDeliveredReply, HostEventsFrame, HostFollowupReply, HostLookupReply, HostRequestReply } from "../src/agent/protocol.ts";
 import { decisionText, kst } from "../src/agent/ledger.ts";
 import { supervisorConfig, supervisorInfo } from "../src/agent/policy.ts";
 import { HostSupervisor, parseHostEvent, readSupervisorState, supervisorStatePath, type SupervisorOptions } from "../src/agent/supervisor.ts";
@@ -319,6 +319,90 @@ describe("ledger mode: follow-ups and answers", () => {
     expect(frames.flatMap((f) => f.events).find((e) => e.id === q)).toMatchObject({ kind: "primary_handoff", task: t, source: "devlead", options: [{ key: "A" }, { key: "B" }, { key: "C" }] });
     expect(((await s.request({ op: "host.status", task: t })) as { tasks: { id: string }[] }).tasks.map((x) => x.id)).toEqual([t]);
     expect(s.status()).toMatchObject({ kind: "ledger", agent: null, label: "devlead", ledger: { requests: 0, waiting: 0 } });
+  });
+});
+
+describe("ledger mode: delivery receipts", () => {
+  const REF = "ChatGPT via 0bridge · 2026-10-13 17:31 KST · hd_abcdefghjk · https://chatgpt.com/c/abc";
+
+  test("each event goes to host-task delivered with channel dots and the hub's ref; recorded, duplicate, refused and failed per event; nothing else runs", async () => {
+    const { host, make } = setup();
+    const s = make();
+    const t = host.create("PR 정리");
+    const q = host.emit("primary_handoff", t, HANDOFF)!;
+    const note = host.emit("primary_handoff", t, "PR #12 머지했습니다.")!;
+    const followup = host.emit("user_followup", t, "사용자의 말")!;
+    // Control characters and line breaks in the ref become spaces; a repeated id is asked once.
+    const r = (await s.request({ op: "host.delivered", events: [q, note, q, followup, 9999], ref: ` ${REF.replace(" · https", "\n· https")}\u0007\t` })) as HostDeliveredReply;
+    const rec = host.events("primary_delivered");
+    expect(rec.map((e) => [e.task, e.dedupe, e.data.event, e.data.channel, e.data.ref])).toEqual([
+      [t, `delivered:${q}`, q, "dots", REF],
+      [t, `delivered:${note}`, note, "dots", REF],
+    ]);
+    expect(r.results).toEqual([
+      { event: q, status: "recorded", receipt: rec[0]!.id, detail: `delivery receipt recorded (primary_delivered, host event #${rec[0]!.id})` },
+      { event: note, status: "recorded", receipt: rec[1]!.id, detail: `delivery receipt recorded (primary_delivered, host event #${rec[1]!.id})` },
+      { event: followup, status: "refused", detail: "not a team message (host-task: not a primary_handoff event)" },
+      { event: 9999, status: "refused", detail: "not a team message (host-task: not a primary_handoff event)" },
+    ]);
+    // The argv: the event, then options as --name=value (a ref starting with a dash is never an option).
+    expect(host.hostTaskCalls().filter((c) => c[0] === "delivered")).toEqual([q, note, followup, 9999].map((e) => ["delivered", String(e), "--channel=dots", `--ref=${REF}`]));
+
+    // Again: a receipt that's there is a duplicate (a success); a host-task failure is failed, with why.
+    host.failNextDelivered();
+    const again = (await s.request({ op: "host.delivered", events: [q, note], ref: REF })) as HostDeliveredReply;
+    expect(again.results).toEqual([
+      { event: q, status: "failed", detail: "database is locked" },
+      { event: note, status: "duplicate", detail: "it already had a delivery receipt" },
+    ]);
+    expect(((await s.request({ op: "host.delivered", events: [q], ref: REF })) as HostDeliveredReply).results).toEqual([{ event: q, status: "duplicate", detail: "it already had a delivery receipt" }]);
+    expect(host.events("primary_delivered")).toHaveLength(2);
+
+    // What the hub never sends: refused before host-task is asked.
+    const asked = host.hostTaskCalls().length;
+    for (const events of [[], Array.from({ length: 51 }, (_, i) => i + 1), [1.5], [0], ["7"]] as unknown as number[][])
+      await expect(s.request({ op: "host.delivered", events, ref: REF })).rejects.toThrow(/bad event ids/);
+    for (const ref of ["", " \u0007 ", 7] as unknown as string[]) await expect(s.request({ op: "host.delivered", events: [q], ref })).rejects.toThrow(/empty ref/);
+    expect(host.hostTaskCalls().length).toBe(asked);
+    // No question closed, no decision, no follow-up, nothing typed or sent.
+    expect(["user_decision", "user_followup", "attention_resolved"].map((k) => host.events(k).length)).toEqual([0, 1, 0]);
+    nothingElse(host);
+  });
+
+  test("a batch stops in time for the hub's wait: the first is tried, the rest come back not tried; a ref starting with a dash stays the ref, cut at 500 characters", async () => {
+    const { host, make } = setup();
+    const t = host.create("작업");
+    const ids = [1, 2, 3].map((i) => host.emit("primary_handoff", t, `보고 ${i}`)!);
+    // No time left after the first: the others aren't run at all.
+    const quick = make({ deliveredMs: 0 });
+    const r = (await quick.request({ op: "host.delivered", events: ids, ref: REF })) as HostDeliveredReply;
+    expect(r.results.map((x) => [x.event, x.status, x.detail])).toEqual([
+      [ids[0], "recorded", expect.stringContaining("delivery receipt recorded")],
+      [ids[1], "failed", "not tried (time ran out); ask again"],
+      [ids[2], "failed", "not tried (time ran out); ask again"],
+    ]);
+    expect(host.hostTaskCalls().filter((c) => c[0] === "delivered").map((c) => c[1])).toEqual([String(ids[0])]);
+    // Asked again with time: the rest are recorded, the first is already there.
+    const s = make();
+    const long = `--channel=telegram ${"x".repeat(600)}`;
+    const again = (await s.request({ op: "host.delivered", events: ids, ref: long })) as HostDeliveredReply;
+    expect(again.results.map((x) => x.status)).toEqual(["duplicate", "recorded", "recorded"]);
+    const rec = host.events("primary_delivered");
+    expect(rec.map((e) => [e.data.event, e.data.channel])).toEqual(ids.map((e) => [e, "dots"]));
+    expect(rec[1]!.data.ref).toBe(long.slice(0, 500));
+    expect(host.hostTaskCalls().filter((c) => c[0] === "delivered").at(-1)).toEqual(["delivered", String(ids[2]), "--channel=dots", `--ref=${long.slice(0, 500)}`]);
+  });
+
+  test("outside ledger mode a delivery receipt is refused and host-task isn't asked", async () => {
+    const { base, ctx } = setup();
+    const host = fakeHost(join(base, "claw"));
+    const cfg = supervisorConfig({ kind: "openclaw", agent: "lead", hostTask: host.bins.hostTask, openclaw: host.bins.openclaw, herdr: host.bins.herdr, pollMs: 30 })!;
+    const s = new HostSupervisor(ctx, cfg, {});
+    live.push(s);
+    const q = host.emit("primary_handoff", host.create("x"), "끝났습니다")!;
+    await expect(s.request({ op: "host.delivered", events: [q], ref: REF })).rejects.toThrow(/delivery receipts go only into a work ledger/);
+    expect(host.hostTaskCalls().filter((c) => c[0] === "delivered")).toEqual([]);
+    expect(host.events("primary_delivered")).toEqual([]);
   });
 });
 

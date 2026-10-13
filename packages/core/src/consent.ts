@@ -12,7 +12,7 @@
  *
  * The choice is kept in localStorage (`0b-consent`). The script exposes `window.zbConsent`
  * ({ choice, set, open, clear }) and fires a `0b-consent` event on window with the new choice;
- * any element with `data-consent="open"` (the footers' "Cookie settings") opens the banner again.
+ * any element with `data-consent="open"` (the privacy policies' "Cookie settings" button) opens the banner again.
  * After Reject, whatever PostHog kept on the device (its `ph_*` cookie and localStorage) is
  * removed once the page's PostHog has opted out (`clear`, which the dashboard calls again after
  * its PostHog, loaded asynchronously, has).

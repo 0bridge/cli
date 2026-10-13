@@ -31,7 +31,7 @@ bun test
 bun run build        # apps/cli/dist/0b.js, the file npm ships
 ```
 
-Releases are built and published from this repository by GitHub Actions with [npm provenance](https://docs.npmjs.com/generating-provenance-statements), so `npm view 0bridge --json` (and the package page on npmjs.com) links each version to the commit and workflow that built it.
+Each release is this repository's tagged commit (`v<version>`): it is built, scanned for secrets and tested on the maintainer's machine, then published to npm by hand with two-factor authentication. Versions up to 0.2.37 were published by GitHub Actions with [npm provenance](https://docs.npmjs.com/generating-provenance-statements); later versions have no provenance statement, so compare a version against its tag here.
 
 ## Issues and security
 

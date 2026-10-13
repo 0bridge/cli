@@ -28,6 +28,21 @@ export const statusLockPath = (ctx: Context) => join(statusDir(ctx), "worker.loc
 
 export type LiveState = "working" | "needs-you" | "idle" | "ended" | "error";
 
+/**
+ * What a needs-you mark waits on: a real pending approval (a typed permission notice, or a
+ * permission request naming its tool), a question or input, or a permission notice 0bridge can't
+ * vouch for. Only the first is an approval, and none of them is answered from the board.
+ */
+export type NeedKind = "approval" | "input" | "unverified";
+/**
+ * Why a permission notice is unverified: `message-only`, no notification type, only the word
+ * "permission" in its text; `no-tool`, a permission request that names no tool; `bypass-mode`,
+ * either of those from a session running with permissions skipped (`permission_mode:
+ * bypassPermissions`). A typed notice or a request naming its tool stays an approval in any mode:
+ * Claude Code sends those only for a dialog on screen.
+ */
+export type NeedWhy = "message-only" | "bypass-mode" | "no-tool";
+
 /** One hook event as the status worker reads it: the newest per session wins. */
 export interface StatusMark {
   tool: string;
@@ -36,6 +51,9 @@ export interface StatusMark {
   event: string;
   state: LiveState;
   reason?: "permission" | "input";
+  /** needs-you only: what it waits on, and why it's unverified when it is. */
+  need?: NeedKind;
+  needWhy?: NeedWhy;
   /** When the hook ran (ms). */
   at: number;
   cwd?: string;
@@ -148,6 +166,9 @@ export function statusMark(args: string[], input: string, now = Date.now()): Sta
   if (!native) return null;
   const base = { tool, native, event, at: now, ...(cwd ? { cwd } : {}), ...(transcript ? { transcript } : {}) };
   const who = AGENT[tool] ?? tool;
+  // Claude Code's hook input carries the session's permission mode (optional). With permissions skipped, a
+  // notice 0bridge already can't vouch for (untyped, or naming no tool) is even less likely a prompt: said so.
+  const bypass = j.permission_mode === "bypassPermissions";
 
   switch (event) {
     case "UserPromptSubmit":
@@ -158,21 +179,31 @@ export function statusMark(args: string[], input: string, now = Date.now()): Sta
     case "Notification": {
       const type = str(j.notification_type, 64);
       const message = str(j.message);
-      // Older Claude Code sent no type: its permission notices say so.
-      const reason =
-        type === "permission_prompt" || type === "worker_permission_prompt" || (!type && /permission/i.test(message ?? ""))
-          ? "permission"
-          : type === "elicitation_dialog" || type === "elicitation_url_dialog" || type === "agent_needs_input"
-            ? "input"
-            : null;
+      const typed = type === "permission_prompt" || type === "worker_permission_prompt";
+      // Older Claude Code sent no type: a notice that only says "permission" may be one (unverified).
+      const guessed = !type && /permission/i.test(message ?? "");
+      const reason = typed || guessed ? "permission" : type === "elicitation_dialog" || type === "elicitation_url_dialog" || type === "agent_needs_input" ? "input" : null;
       // idle_prompt ("waiting for your input" a minute after a turn) and the rest change nothing.
-      return reason ? { ...base, state: "needs-you", reason, ...(message ? { message } : {}) } : null;
+      if (!reason) return null;
+      // A typed notice is only sent for a dialog on screen, bypass mode or not (its exceptions are what block an unattended session).
+      const why: NeedWhy | undefined = guessed ? (bypass ? "bypass-mode" : "message-only") : undefined;
+      return { ...base, state: "needs-you", reason, need: reason === "input" ? "input" : why ? "unverified" : "approval", ...(why ? { needWhy: why } : {}), ...(message ? { message } : {}) };
     }
     case "PermissionRequest": {
       const tn = str(j.tool_name, 100);
-      if (tn === "AskUserQuestion") return { ...base, state: "needs-you", reason: "input", message: questionOf(j.tool_input) ?? `${who} has a question for you` };
+      if (tn === "AskUserQuestion") return { ...base, state: "needs-you", reason: "input", need: "input", message: questionOf(j.tool_input) ?? `${who} has a question for you` };
       const detail = detailOf(tn, j.tool_input);
-      return { ...base, state: "needs-you", reason: "permission", message: `${who} needs your permission to use ${tn ?? "a tool"}`, ...(detail ? { detail } : {}) };
+      // A request naming its tool is a dialog on screen, also in bypass mode; one naming none can't be vouched for.
+      const why: NeedWhy | undefined = tn ? undefined : bypass ? "bypass-mode" : "no-tool";
+      return {
+        ...base,
+        state: "needs-you",
+        reason: "permission",
+        need: why ? "unverified" : "approval",
+        ...(why ? { needWhy: why } : {}),
+        message: `${who} needs your permission to use ${tn ?? "a tool"}`,
+        ...(detail ? { detail } : {}),
+      };
     }
     case "Stop":
     case "notify": {

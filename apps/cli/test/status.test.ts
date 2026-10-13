@@ -91,6 +91,40 @@ describe("what a hook's input means", () => {
     expect(cursor({ prompt: "x" })).toMatchObject({ event: "beforeSubmitPrompt", state: "working" });
   });
 
+  // D78, from the 2026-10-08 devlead session (--dangerously-skip-permissions) that showed "Claude needs your permission" as NEEDS YOU for 11+ minutes.
+  test("what a wait is: a pending approval, input, or an unverified permission notice, one fixture per cause", () => {
+    const BYPASS = { permission_mode: "bypassPermissions" };
+    // A message-only notice, no type: unverified, never an approval.
+    expect(claude("Notification", { message: "Claude needs your permission" })).toMatchObject({ state: "needs-you", reason: "permission", need: "unverified", needWhy: "message-only", message: "Claude needs your permission" });
+    // Bypass mode: a typed notice or a request naming its tool is still a dialog on screen (an approval);
+    // only what was unverified already (untyped, no tool) says bypass mode on top.
+    for (const type of ["permission_prompt", "worker_permission_prompt"]) {
+      const m = claude("Notification", { message: "Claude needs your permission", notification_type: type, ...BYPASS });
+      expect(m).toMatchObject({ need: "approval" });
+      expect(m!.needWhy).toBeUndefined();
+    }
+    const tool = claude("PermissionRequest", { tool_name: "Bash", tool_input: { command: "ls" }, ...BYPASS });
+    expect(tool).toMatchObject({ need: "approval", detail: "Bash: ls" });
+    expect(tool!.needWhy).toBeUndefined();
+    expect(claude("Notification", { message: "Claude needs your permission", ...BYPASS })).toMatchObject({ need: "unverified", needWhy: "bypass-mode" });
+    expect(claude("PermissionRequest", { tool_input: {}, ...BYPASS })).toMatchObject({ need: "unverified", needWhy: "bypass-mode" });
+    // A typed permission_prompt in every other mode: a pending approval.
+    for (const mode of [undefined, "default", "acceptEdits", "plan"]) {
+      const m = claude("Notification", { message: "Claude needs your permission to use Bash", notification_type: "permission_prompt", ...(mode ? { permission_mode: mode } : {}) });
+      expect(m).toMatchObject({ reason: "permission", need: "approval" });
+      expect(m!.needWhy).toBeUndefined();
+    }
+    // A permission request with its tool: a pending approval; with none, unverified.
+    expect(claude("PermissionRequest", { tool_name: "Edit", tool_input: { file_path: "/a.ts" }, permission_mode: "default" })).toMatchObject({ need: "approval", detail: "Edit: /a.ts" });
+    expect(claude("PermissionRequest", { tool_input: {} })).toMatchObject({ need: "unverified", needWhy: "no-tool" });
+    // Elicitation and AskUserQuestion are input, also in bypass mode (a question still waits there).
+    for (const type of ["elicitation_dialog", "elicitation_url_dialog", "agent_needs_input"])
+      expect(claude("Notification", { message: "An MCP server needs your input", notification_type: type, ...BYPASS })).toMatchObject({ reason: "input", need: "input" });
+    expect(claude("PermissionRequest", { tool_name: "AskUserQuestion", tool_input: { questions: [{ question: "Which database?" }] }, ...BYPASS })).toMatchObject({ reason: "input", need: "input", message: "Which database?" });
+    // Codex: a request with its tool is an approval.
+    expect(codex("PermissionRequest", { tool_name: "shell", tool_input: { command: "npm publish" } })).toMatchObject({ need: "approval" });
+  });
+
   test("garbage, a terminal and unknown targets say nothing", () => {
     expect(statusMark(["claude"], "not json")).toBeNull();
     expect(statusMark(["claude"], "")).toBeNull();
@@ -250,12 +284,46 @@ describe("the status worker", () => {
     expect(back.at).toBeLessThan(23_500);
   });
 
-  test("a session that keeps needing you holds the worker up to 10 minutes, then it lets go", async () => {
-    const w = fakeWorld([{ at: 0, mark: { native: "a", state: "needs-you", transcript: "/t.jsonl" } }]);
+  test("a session that keeps needing you holds the worker up to 10 minutes, then goes up unconfirmed since then and the worker lets go", async () => {
+    const w = fakeWorld([{ at: 0, mark: { native: "a", state: "needs-you", reason: "permission", need: "approval", transcript: "/t.jsonl", message: "Claude needs your permission to use Bash" } }]);
     await new StatusWorker(w.deps).run();
-    expect(w.posts.length).toBe(1);
+    expect(w.posts.length).toBe(2);
+    expect(w.posts[0]!.updates[0]).toMatchObject({ state: "needs-you", need: "approval", observedAt: 0, at: 0 });
+    expect(w.posts[0]!.updates[0]!.unconfirmedAt).toBeUndefined();
+    // D78: no longer left as if just seen. Same hook time (a newer mark still wins), the time it was seen, and since when it's unconfirmed.
+    const late = w.posts[1]!.updates[0]!;
+    expect(late).toMatchObject({ state: "needs-you", reason: "permission", need: "approval", observedAt: 0, at: 0, lines: ["Claude needs your permission to use Bash"] });
+    expect(late.unconfirmedAt).toBeGreaterThan(10 * 60_000);
+    expect(late.unconfirmedAt).toBeLessThan(10 * 60_000 + 4_000);
     expect(w.clock()).toBeGreaterThan(10 * 60_000);
     expect(w.clock()).toBeLessThan(10 * 60_000 + 20_000);
+  });
+
+  test("a transcript that can't be read: unconfirmed at once, or as soon as it stops being readable", async () => {
+    // Unreadable from the start (or none named): nothing to watch, so it goes up unconfirmed with its first post.
+    const gone = fakeWorld([{ at: 0, mark: { native: "a", state: "needs-you", reason: "permission", need: "unverified", needWhy: "bypass-mode", transcript: "/gone.jsonl" } }], { size: () => null });
+    await new StatusWorker(gone.deps).run();
+    expect(gone.posts.length).toBe(1);
+    expect(gone.posts[0]!.updates[0]).toMatchObject({ state: "needs-you", need: "unverified", needWhy: "bypass-mode", observedAt: 0, unconfirmedAt: 0 });
+    const none = fakeWorld([{ at: 0, mark: { native: "b", state: "needs-you", reason: "input", need: "input" } }]);
+    await new StatusWorker(none.deps).run();
+    expect(none.posts[0]!.updates[0]).toMatchObject({ need: "input", unconfirmedAt: 0 });
+    // Readable, then not (deleted, moved, permissions): unconfirmed from the look that failed.
+    const lost = fakeWorld([{ at: 0, mark: { native: "c", state: "needs-you", reason: "permission", need: "approval", transcript: "/t.jsonl" } }], { size: (_, now) => (now < 30_000 ? 100 : null) });
+    await new StatusWorker(lost.deps).run();
+    expect(lost.posts.length).toBe(2);
+    expect(lost.posts[1]!.updates[0]).toMatchObject({ state: "needs-you", need: "approval", observedAt: 0, at: 0 });
+    expect(lost.posts[1]!.updates[0]!.unconfirmedAt).toBeGreaterThanOrEqual(30_000);
+    expect(lost.posts[1]!.updates[0]!.unconfirmedAt).toBeLessThan(34_000);
+    expect(lost.clock()).toBeLessThan(60_000);
+  });
+
+  test("an answer clears what it waited on: working carries no need, observed or unconfirmed time", async () => {
+    const w = fakeWorld([{ at: 0, mark: { native: "a", state: "needs-you", reason: "permission", need: "unverified", needWhy: "message-only", transcript: "/t.jsonl" } }], { size: (_, now) => (now < 9_000 ? 100 : 150) });
+    await new StatusWorker(w.deps).run();
+    const back = w.posts.at(-1)!.updates[0]!;
+    expect(back.state).toBe("working");
+    for (const k of ["reason", "need", "needWhy", "observedAt", "unconfirmedAt"] as const) expect(back[k]).toBeUndefined();
   });
 
   test("end-to-end history: once the server says no text, no title or lines go up (and that's remembered)", async () => {
@@ -342,8 +410,30 @@ describe("reading the board", () => {
     });
     const out = renderBoard({ entries: [e("needs-you", { lines: ["Claude needs your permission to use Bash"], since: 4 * 60_000 }), e("working", { tool: "codex", repo: null, cwd: "me/scratch" })], counts: { "needs-you": 1, working: 1, idle: 0, ended: 0, error: 0 }, now: 8 * 60_000 }, false);
     expect(out[0]).toBe("1 needs you · 1 working · 0 idle");
-    expect(out[1]).toMatch(/^NEEDS YOU {2}devbox {2}Claude Code {2}acme\/web@feat-x {2}4m {2}"Claude needs your permission to use Bash"$/);
+    // A board row from a 0b before D78 says nothing of its kind, and the row says so.
+    expect(out[1]).toMatch(/^NEEDS YOU {2}devbox {2}Claude Code {2}acme\/web@feat-x {2}4m {2}\[waiting, kind not reported\] {2}"Claude needs your permission to use Bash"$/);
     expect(out[2]).toMatch(/^WORKING {4}devbox {2}Codex {8}me\/scratch {7}8m {2}"Checkout"$/);
+    // D78: the kind, when it was seen, and a wait nothing confirms is labelled so.
+    const seen = Date.UTC(2026, 9, 8, 11, 42);
+    const rows = renderBoard(
+      {
+        entries: [
+          e("needs-you", { need: "approval", observedAt: seen, since: seen }),
+          e("needs-you", { need: "unverified", needWhy: "bypass-mode", observedAt: seen, since: seen }),
+          e("needs-you", { need: "approval", observedAt: seen, unconfirmedSince: seen + 10 * 60_000, since: seen }),
+          e("needs-you", { reason: "permission", since: seen }),
+        ],
+        counts: { "needs-you": 4, working: 0, idle: 0, ended: 0, error: 0 },
+        unsure: 2,
+        now: seen + 11 * 60_000,
+      },
+      false,
+    );
+    expect(rows[0]).toBe("4 need you (2 unverified or unconfirmed) · 0 working · 0 idle");
+    expect(rows[1]).toMatch(/^NEEDS YOU {3}.* 11m {2}\[pending approval, seen 11:42 UTC\]/);
+    expect(rows[2]).toMatch(/^UNVERIFIED {2}.*\[unverified permission notice \(no type or tool, and the session skips permissions\), seen 11:42 UTC\]/);
+    expect(rows[3]).toMatch(/^UNCONFIRMED .*\[pending approval, seen 11:42 UTC, unconfirmed since 11:52 UTC\]/);
+    expect(rows[4]).toMatch(/^NEEDS YOU {3}.*\[permission, kind not reported\]/);
   });
 });
 

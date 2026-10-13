@@ -13,6 +13,7 @@
     "./login-code": "./src/login-code.ts",
     "./mcp-registry": "./src/mcp-registry.ts",
     "./scope": "./src/scope.ts",
+    "./consent": "./src/consent.ts",
     "./agent-vm": "./src/agent-vm.ts",
     "./qr": "./src/qr.ts",
     "./notes": "./src/notes.ts",

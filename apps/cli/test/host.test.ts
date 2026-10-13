@@ -37,6 +37,16 @@ describe("parseHost", () => {
       args: { cursor: "17", wait: 5, kinds: ["question", "completed"] },
     });
     expect(await parse("updates")).toMatchObject({ args: {} });
+    expect(await parse("receipts")).toEqual({ sub: "receipts", tool: "bridge__host_receipts", json: false, args: {} });
+    expect(await parse("receipts", "--since", "30m", "--limit", "5", "--json")).toEqual({ sub: "receipts", tool: "bridge__host_receipts", json: true, args: { since: "30m", limit: 5 } });
+    expect(await parse("receipts", "--since", "2026-10-07T09:00:00Z")).toMatchObject({ args: { since: "2026-10-07T09:00:00Z" } });
+  });
+
+  test("--key goes with a request, a follow-up and an answer (a retry records nothing new)", async () => {
+    expect(await parse("request", "Fix it", "--key", "msg_123")).toMatchObject({ args: { request: "Fix it", key: "msg_123" } });
+    expect(await parse("followup", "T-1", "more", "--key", "chat:abc/1")).toMatchObject({ args: { task: "T-1", text: "more", key: "chat:abc/1" } });
+    expect(await parse("answer", "45", "--task", "T-1", "B", "--key", "m-9")).toMatchObject({ args: { question: "45", key: "m-9" } });
+    expect((await parse("request", "Fix it"))!.args.key).toBeUndefined();
   });
 
   test('"-" reads the text from stdin; -- keeps text that looks like a flag', async () => {
@@ -65,6 +75,12 @@ describe("parseHost", () => {
     await bad(["updates", "--wait", "60"], "--wait is 0 to 20");
     await bad(["updates", "--kinds", "question,typo"], "not typo");
     await bad(["request", "x", "--bogus"], "bogus");
+    await bad(["request", "x", "--key", "has space"], "--key is your own id");
+    await bad(["status", "--key", "k"], "doesn't take --key");
+    await bad(["receipts", "T-1"], "takes no arguments");
+    await bad(["receipts", "--since", "yesterday"], "--since is minutes ago");
+    await bad(["receipts", "--limit", "500"], "--limit is 1 to 100");
+    await bad(["receipts", "--key", "k"], "doesn't take --key");
   });
 });
 

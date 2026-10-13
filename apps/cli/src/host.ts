@@ -8,7 +8,9 @@ import { cloudClient } from "./cloud.ts";
  * gateway's /mcp with this device's token. On the dev machine `0b agent supervisor ledger` writes
  * a request as a dev_request, a follow-up as a user_followup and an answer as a user_decision
  * into its work ledger. An agent computer's token (`0b setup --agent-vm`) reaches only such a
- * ledger machine; the gateway refuses one on OpenClaw.
+ * ledger machine; the gateway refuses one on OpenClaw. `--key` gives a send the caller's own
+ * id, so running it again (a retry after a lost reply) records nothing new and prints the first
+ * result; `0b host receipts` lists what this token sent and where each stands.
  *
  * Exit codes: 0 done, 1 the tool or the gateway refused (printed as it said), 2 a usage mistake.
  */
@@ -17,17 +19,23 @@ export const HOST_USAGE = `Usage
   0b host request "<text>"            Hand work to your dev machine's work ledger; prints its request
         [--project p] [--repo r]       id (hr_…), or its task id once it has one
         [--priority P0-P3] [--machine m]
+        [--key k]                      your own id for this send: the same key again records nothing new
   0b host status [T-012|hr_…]         One task or request, or the recent tasks (--machine m)
-  0b host followup <T-012|hr_…> "<text>"   More about a task, or a request with no task id yet
+  0b host followup <T-012|hr_…> "<text>"   More about a task, or a request with no task id yet (--key k)
   0b host answer <question> --task T-012 "<text>"   Answer a question from the host (its id, e.g. 45, and
-        [--choice A]                   its task); --choice A for one that lists options
+        [--choice A] [--key k]         its task); --choice A for one that lists options
   0b host questions                   Questions waiting for you (--machine m)
   0b host updates [--cursor c]        New questions, completions, failures and progress since the
         [--wait s] [--kinds k,…]       cursor; the last line is the next cursor, for the next run
                                        (--wait up to 20 s; kinds: question,completed,failed,progress,notice)
+  0b host receipts [--since 30m]      What this token sent lately and where each stands (no reply yet,
+        [--limit n]                    in the ledger, taken up as T-012…), never the words; --since takes
+                                       minutes (30, 30m, 2h, 1d) or an ISO time (default 24 hours)
   "-" as the text reads it from stdin. --json prints {ok, text, data} for scripts.`;
 
-const SUBS = ["request", "status", "followup", "answer", "questions", "updates"] as const;
+const SUBS = ["request", "status", "followup", "answer", "questions", "updates", "receipts"] as const;
+/** A send's key as the gateway takes it. */
+const KEY = /^[A-Za-z0-9._:@/+=-]{1,100}$/;
 type Sub = (typeof SUBS)[number];
 const KINDS = ["question", "completed", "failed", "progress", "notice"];
 
@@ -62,6 +70,9 @@ export async function parseHost(argv: string[], readStdin: () => Promise<string>
           cursor: { type: "string" },
           wait: { type: "string" },
           kinds: { type: "string" },
+          key: { type: "string" },
+          since: { type: "string" },
+          limit: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -87,15 +98,17 @@ export async function parseHost(argv: string[], readStdin: () => Promise<string>
     if (extra.length) throw new HostUsage(`0b host ${sub} doesn't take --${extra.join(", --")}`);
   };
   const machine = v.machine ? { machine: v.machine } : {};
+  if (v.key !== undefined && !KEY.test(v.key)) throw new HostUsage("--key is your own id for this send: 1 to 100 letters, digits and . _ : @ / + = -");
+  const key = v.key ? { key: v.key } : {};
   switch (sub as Sub) {
     case "request": {
-      allowed(["project", "repo", "priority", "machine"]);
+      allowed(["project", "repo", "priority", "machine", "key"]);
       const request = await textOf(rest, 'the request: 0b host request "what to do"');
       return {
         sub: "request",
         tool,
         json,
-        args: { request, ...(v.project ? { project: v.project } : {}), ...(v.repo ? { repo: v.repo } : {}), ...(v.priority ? { priority: v.priority.toUpperCase() } : {}), ...machine },
+        args: { request, ...(v.project ? { project: v.project } : {}), ...(v.repo ? { repo: v.repo } : {}), ...(v.priority ? { priority: v.priority.toUpperCase() } : {}), ...machine, ...key },
       };
     }
     case "status": {
@@ -105,13 +118,13 @@ export async function parseHost(argv: string[], readStdin: () => Promise<string>
       return { sub: "status", tool, json, args: { ...(id ? (/^hr_/.test(id) ? { request: id } : { task: id }) : {}), ...machine } };
     }
     case "followup": {
-      allowed(["machine"]);
+      allowed(["machine", "key"]);
       const [task, ...words] = rest;
       if (!task) throw new HostUsage('0b host followup <T-012|hr_…> "<text>"');
-      return { sub: "followup", tool, json, args: { task, text: await textOf(words, 'the follow-up: 0b host followup T-012 "more"'), ...machine } };
+      return { sub: "followup", tool, json, args: { task, text: await textOf(words, 'the follow-up: 0b host followup T-012 "more"'), ...machine, ...key } };
     }
     case "answer": {
-      allowed(["choice", "machine", "task"]);
+      allowed(["choice", "machine", "task", "key"]);
       const [question, ...words] = rest;
       if (!question || !/^#?\d+$/.test(question)) throw new HostUsage('0b host answer <question id, e.g. 45> --task T-012 "<text>"');
       if (!v.task || !/^T-\d+$/i.test(v.task)) throw new HostUsage("--task <T-012>: the task the question is on (0b host questions shows it), so the answer can't land on another question");
@@ -119,7 +132,7 @@ export async function parseHost(argv: string[], readStdin: () => Promise<string>
         sub: "answer",
         tool,
         json,
-        args: { question: question.replace(/^#/, ""), task: v.task.toUpperCase(), text: await textOf(words, 'the answer: 0b host answer 45 --task T-012 "B, and keep the old page"'), ...(v.choice ? { choice: v.choice } : {}), ...machine },
+        args: { question: question.replace(/^#/, ""), task: v.task.toUpperCase(), text: await textOf(words, 'the answer: 0b host answer 45 --task T-012 "B, and keep the old page"'), ...(v.choice ? { choice: v.choice } : {}), ...machine, ...key },
       };
     }
     case "questions":
@@ -144,6 +157,22 @@ export async function parseHost(argv: string[], readStdin: () => Promise<string>
       }
       return { sub: "updates", tool, json, args };
     }
+    case "receipts": {
+      allowed(["since", "limit"]);
+      if (rest.length) throw new HostUsage("0b host receipts takes no arguments (--since 30m, --limit n)");
+      const args: Record<string, unknown> = {};
+      if (v.since !== undefined) {
+        const since = v.since.trim();
+        if (!/^\d+(\.\d+)?\s*(m|min|h|d)?$/i.test(since) && !/^\d{4}-\d{2}-\d{2}/.test(since)) throw new HostUsage("--since is minutes ago (30, 30m, 2h, 1d) or an ISO time (2026-10-07T09:00:00Z)");
+        args.since = since;
+      }
+      if (v.limit !== undefined) {
+        const n = Number(v.limit);
+        if (!Number.isInteger(n) || n < 1 || n > 100) throw new HostUsage("--limit is 1 to 100");
+        args.limit = n;
+      }
+      return { sub: "receipts", tool, json, args };
+    }
   }
 }
 
@@ -151,7 +180,7 @@ export async function parseHost(argv: string[], readStdin: () => Promise<string>
 export function cliWords(s: string): string {
   return s
     .replace(/bridge__host_(status|followup) (?:task|request)=([A-Za-z0-9_-]+)/g, "0b host $1 $2")
-    .replace(/bridge__host_(request|status|followup|answer|questions|updates)\b/g, "0b host $1");
+    .replace(/bridge__host_(request|status|followup|answer|questions|updates|receipts)\b/g, "0b host $1");
 }
 
 /** What a tool's result prints: stdout, and whether it was an error (stderr, exit 1). */

@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { homedir } from "node:os";
+import { basename, join, resolve, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import type { Context, McpServer, ToolId, Transport } from "./types.ts";
 import { agentProfiles } from "./agent-profiles.ts";
@@ -301,9 +302,15 @@ export function extraClaudeDirs(ctx: Context): string[] {
   const main = resolve(ctx.home, ".claude");
   const found = new Set(agentProfiles(ctx, "claude").map((p) => p.dir));
   const env = process.env.CLAUDE_CONFIG_DIR;
-  if (env && resolve(env) !== main && existsSync(join(env, ".claude.json"))) found.add(resolve(env));
+  // CLAUDE_CONFIG_DIR belongs to the home it was set in: with the home pointed elsewhere (a test's
+  // or a sandbox's temporary one, ZEROBRIDGE_USER_HOME), a folder outside it is someone's real
+  // config and isn't written to (2026-10-07: a test rewrote ~/.claude-b/settings.json's hooks).
+  const ownHome = resolve(ctx.home) === resolve(homedir());
+  if (env && resolve(env) !== main && (ownHome || isInside(resolve(env), resolve(ctx.home))) && existsSync(join(env, ".claude.json"))) found.add(resolve(env));
   return [...found].sort();
 }
+
+const isInside = (p: string, dir: string) => p === dir || p.startsWith(dir.endsWith(sep) ? dir : dir + sep);
 
 /**
  * Other Codex homes (a second account run with CODEX_HOME=~/.codex-b): ~/.codex-* folders Codex

@@ -83,6 +83,7 @@ export type HubRequest =
   | { t: "req"; rid: string; op: "approve"; task: string; request: string; decision: "allow" | "deny"; note?: string }
   | { t: "req"; rid: string; op: "stop"; task: string }
   | { t: "req"; rid: string; op: "sessions" }
+  | { t: "req"; rid: string; op: "send-check"; task?: string; native?: { tool: string; id: string; cwd: string } }
   | ({ t: "req"; rid: string } & HostOp);
 
 /** Everything the hub sends a daemon. */
@@ -94,4 +95,28 @@ export interface RunningSession {
   cwd: string;
   title?: string;
   via: "daemon" | "herdr" | "tmux" | "process";
+}
+
+/**
+ * The `sessions` reply: the sessions this machine lists, how many more it found but hides
+ * (outside the repos allowed here) and why, never where; and where it looked.
+ */
+export interface SessionsReply {
+  running: RunningSession[];
+  hidden?: { count: number; why: string };
+  looked?: string[];
+}
+
+/**
+ * The `send-check` reply: what a `send` with the same target would do now, found without
+ * sending, starting or logging anything. `route` is where it would go; `why` says why it would be
+ * refused. Paths only as the refusal already names them.
+ */
+export interface SendCheck {
+  ok: boolean;
+  why?: string;
+  route: "task" | "herdr" | "tmux" | "codex queue" | "headless" | null;
+  /** How many repos agents may use here (0: none). */
+  repos: number;
+  notes: string[];
 }

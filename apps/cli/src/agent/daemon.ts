@@ -19,7 +19,7 @@ import { installService } from "../service.ts";
 import { vaultValues } from "../vault.ts";
 import { HostSupervisor, type SupervisorOptions } from "./supervisor.ts";
 import { connectLoop, type Conn } from "./ws.ts";
-import type { DaemonAgentId, EventData, EventFrame, EventKind, HelloFrame, HostOp, HubFrame, HubRequest, ReplyFrame, RunningSession, TaskState } from "./protocol.ts";
+import type { DaemonAgentId, EventData, EventFrame, EventKind, HelloFrame, HostOp, HubFrame, HubRequest, ReplyFrame, RunningSession, SendCheck, SessionsReply, TaskState } from "./protocol.ts";
 
 /**
  * The machine's agent daemon: it holds the connection to the machine hub, starts and
@@ -210,7 +210,9 @@ export class Daemon {
       case "stop":
         return this.stop(m.task);
       case "sessions":
-        return { running: await this.sessions() };
+        return this.sessions();
+      case "send-check":
+        return this.sendCheck(m);
       case "host.request":
       case "host.followup":
       case "host.answer":
@@ -271,12 +273,19 @@ export class Daemon {
     return repoFor(cfg, [...parts.slice(0, at), m[1]!].join(sep));
   }
 
+  /** Why `agent` may not work at `cwd` (not an allowed repo, or not for this agent); null when it may. */
+  private refusalAt(cfg: AgentConfig, cwd: string, agent: string): string | null {
+    const policy = this.policyFor(cfg, cwd);
+    if (!policy) return `${cwd} isn't in a repo agents may use on ${machineName()}`;
+    if (policy.agents && AGENT_IDS.includes(agent as AgentId) && !policy.agents.includes(agent as AgentId)) return `${agent} isn't allowed in ${policy.root} (allowed: ${policy.agents.join(", ")})`;
+    return null;
+  }
+
   /** The rules where `agent` would work at `cwd`; throws when that isn't an allowed repo, or not for this agent. */
   private allowedAt(cfg: AgentConfig, cwd: string, agent: string): RepoPolicy {
-    const policy = this.policyFor(cfg, cwd);
-    if (!policy) throw new Error(`${cwd} isn't in a repo agents may use on ${machineName()}`);
-    if (policy.agents && AGENT_IDS.includes(agent as AgentId) && !policy.agents.includes(agent as AgentId)) throw new Error(`${agent} isn't allowed in ${policy.root} (allowed: ${policy.agents.join(", ")})`);
-    return policy;
+    const no = this.refusalAt(cfg, cwd, agent);
+    if (no) throw new Error(no);
+    return this.policyFor(cfg, cwd)!;
   }
 
   private running(): number {
@@ -358,23 +367,96 @@ export class Daemon {
    * checked where it really runs (its own folder and agent), not where the request says it does.
    */
   private async liveRoute(tool: DaemonAgentId, id: string, cwd: string): Promise<{ via: "herdr" | "tmux"; id: string } | { via: "queue" } | null> {
+    const r = await this.routeOf(tool, id, cwd);
+    if ("refused" in r) throw new Error(r.refused);
+    return r.via === "headless" ? null : r;
+  }
+
+  /** liveRoute's answer without acting on it: the route, headless when no live session holds it, or why it's refused. It only looks. */
+  private async routeOf(tool: DaemonAgentId, id: string, cwd: string): Promise<{ via: "herdr" | "tmux"; id: string } | { via: "queue" } | { via: "headless" } | { refused: string }> {
+    const cfg = this.config();
     const herdr = this.adapters.herdr;
     const pane = herdr && (await this.available("herdr")).ok ? ((await herdr.running?.().catch(() => [])) ?? []).find((s) => s.native === id) : undefined;
     if (pane) {
-      this.allowedAt(this.config(), pane.cwd, pane.tool ?? tool);
-      return { via: "herdr", id };
+      const no = this.refusalAt(cfg, pane.cwd, pane.tool ?? tool);
+      return no ? { refused: no } : { via: "herdr", id };
     }
     const tmux = this.adapters.tmux;
     if (tool === "claude") {
       const live = ((await this.adapters.claude?.running?.().catch(() => [])) ?? []).find((s) => s.native === id);
-      if (!live) return null;
-      const where = this.allowedAt(this.config(), live.cwd, "claude");
+      if (!live) return { via: "headless" };
+      const no = this.refusalAt(cfg, live.cwd, "claude");
+      if (no) return { refused: no };
+      const where = this.policyFor(cfg, live.cwd)!;
       const pane = tmux instanceof TmuxAdapter && where.keys && live.pid ? await tmux.paneOf(live.pid) : null;
       if (pane) return { via: "tmux", id: pane };
-      throw new Error(`that session is open in a terminal on ${machineName()}; send it there (or close it there and try again)`);
+      return { refused: `that session is open in a terminal on ${machineName()}; send it there (or close it there and try again)` };
     }
     if (tool === "codex" && tmux && (await this.available("tmux")).ok && ((await tmux.running?.().catch(() => [])) ?? []).some((s) => s.tool === "codex" && s.cwd === cwd)) return { via: "queue" };
-    return null;
+    return { via: "headless" };
+  }
+
+  /**
+   * bridge__agent_send's dry run: what a `send` to this task or session would do now, found
+   * without sending, starting a task, writing a log or holding a slot. It answers whether this
+   * machine would take it and why not, and the route, with what that route does to a terminal.
+   */
+  async sendCheck(m: { task?: string; native?: { tool: string; id: string; cwd: string } }): Promise<SendCheck> {
+    const cfg = this.config();
+    const repos = cfg.enabled ? cfg.repos.length : 0;
+    const notes: string[] = [];
+    const no = (why: string, route: SendCheck["route"] = null): SendCheck => {
+      if (!repos && cfg.enabled) notes.push(`No repo is allowed on ${machineName()}, so it takes no follow-up to any session. Allowing one is the user's call, on the machine (0b agent allow <path>); 0bridge never widens it.`);
+      return { ok: false, why, route, repos, notes };
+    };
+    if (!cfg.enabled) return no("agent control is off on this machine (0b agent on)");
+    let tool: string;
+    let id: string;
+    let cwd: string;
+    let live = false;
+    if (m.task) {
+      if (!TASK_ID.test(m.task)) throw new Error("bad task id");
+      const held = this.tasks.get(m.task);
+      const logged = held ? null : readTask(this.ctx, m.task);
+      if (!held && !logged?.meta) return no(`no task ${m.task} on ${machineName()}`);
+      tool = held?.agent ?? logged!.meta!.agent;
+      cwd = held?.cwd ?? logged!.meta!.cwd;
+      id = held?.native ?? [...logged!.events].reverse().find((e) => e.data.native)?.data.native ?? "";
+      live = Boolean(held?.run && ["starting", "running", "waiting"].includes(held.state));
+    } else if (m.native) {
+      tool = m.native.tool === "claude-code" ? "claude" : String(m.native.tool);
+      id = String(m.native.id ?? "");
+      cwd = String(m.native.cwd ?? "");
+      if (!NATIVE_ID.test(id)) return no("bad session id");
+      if (!AGENT_IDS.includes(tool as AgentId)) return no(`can't send to ${m.native.tool} sessions`);
+    } else throw new Error("say which task or session");
+    const refused = this.refusalAt(cfg, cwd, tool);
+    if (refused) return no(refused);
+    if (live) {
+      notes.push("The task's agent, run here by 0bridge, takes it as its next message.");
+      return { ok: true, route: "task", repos, notes };
+    }
+    if (!id || !NATIVE_ID.test(id)) return no(`task ${m.task} has no session to continue`);
+    const r = await this.routeOf(tool as DaemonAgentId, id, cwd);
+    if ("refused" in r) {
+      if (/open in a terminal/.test(r.refused))
+        notes.push("0bridge types into a terminal only in a repo that allows it (keys), and only through herdr or tmux; it won't resume a session that's open somewhere as a second writer.");
+      return no(r.refused);
+    }
+    const route: SendCheck["route"] = r.via === "queue" ? "codex queue" : r.via;
+    if (r.via === "herdr" || r.via === "tmux")
+      notes.push(
+        `${r.via} types the text into the session's terminal and presses Enter. If the session is showing a prompt (a permission, a question), that text answers it: this is not a safe queue for a prompt nobody has read. Read the session's screen first.`,
+      );
+    else if (r.via === "queue") notes.push("codex queue adds it to the queue of the Codex session open in a terminal.");
+    else
+      notes.push(
+        tool === "claude"
+          ? "No live terminal session with this id was found here (herdr panes, and Claude Code's session files under CLAUDE_CONFIG_DIR or ~/.claude), so Claude Code would resume it headless: a new process writing to that session. If it is open under another config folder, that would be a second writer."
+          : `No live terminal session with this id was found here, so ${tool} would resume it headless: a new process writing to that session.`,
+      );
+    if (this.running() >= MAX_RUNNING) return no(`${machineName()} is already running ${MAX_RUNNING} tasks; stop one first`, route);
+    return { ok: true, route, repos, notes };
   }
 
   /** Continue a task's session (finished here, or never started here) with a new message. */
@@ -432,31 +514,46 @@ export class Daemon {
     return { task: id, state: "stopped" };
   }
 
-  async sessions(): Promise<RunningSession[]> {
+  /**
+   * The sessions open here in allowed repos, and how many more it found outside them: an
+   * empty list is not "nothing runs here". The hidden ones are counted, never named or placed.
+   */
+  async sessions(): Promise<SessionsReply> {
     const cfg = this.config();
-    if (!cfg.enabled) return [];
+    if (!cfg.enabled) return { running: [], hidden: { count: 0, why: "agent control is off on this machine, so it doesn't look (0b agent on)" } };
     const out: RunningSession[] = [];
     const seen = new Set<string>();
+    const hidden = new Set<string>();
+    const looked: string[] = [];
     for (const t of this.tasks.values())
       if (t.run && ["starting", "running", "waiting"].includes(t.state) && t.native) {
         seen.add(t.native);
         out.push({ tool: t.agent, native: t.native, cwd: t.cwd, title: t.id, via: "daemon" });
       }
-    for (const [via, id] of [
-      ["herdr", "herdr"],
-      ["tmux", "tmux"],
-      ["process", "claude"],
+    for (const [via, id, where] of [
+      ["herdr", "herdr", "herdr panes"],
+      ["tmux", "tmux", "tmux panes"],
+      ["process", "claude", "Claude Code's session files (CLAUDE_CONFIG_DIR or ~/.claude only)"],
     ] as const) {
       const a = this.adapters[id];
       if (!a?.running) continue;
+      // Every source is asked, as before D78, so nothing that used to list disappears; one whose CLI failed its version check says so.
+      const ok = id === "claude" || (await this.available(id)).ok;
+      looked.push(ok ? where : `${where} (its version check failed)`);
       const list = await a.running().catch(() => []);
       for (const s of list) {
-        if (seen.has(s.native) || !this.policyFor(cfg, s.cwd)) continue;
+        if (seen.has(s.native)) continue;
+        if (!this.policyFor(cfg, s.cwd)) {
+          hidden.add(s.native);
+          continue;
+        }
         seen.add(s.native);
         out.push({ tool: s.tool ?? id, native: s.native, cwd: s.cwd, ...(s.title ? { title: s.title } : {}), via });
       }
     }
-    return out;
+    for (const n of seen) hidden.delete(n);
+    const why = cfg.repos.length ? "outside the repos agents may use on this machine" : "no repo is allowed on this machine (0b agent allow <path> there)";
+    return { running: out, ...(hidden.size ? { hidden: { count: hidden.size, why } } : {}), looked };
   }
 
   // ── Tasks ─────────────

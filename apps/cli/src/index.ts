@@ -184,7 +184,8 @@ ${c.bold("Usage")}
   0b host request "<text>"     From any terminal (an agent's computer too): hand work to your dev machine's
         [--project p] [--priority P2]  work ledger; prints its id (hr_… or T-012). Also: status [id], followup
         [--machine m] [--json]  <id> "<text>", answer <question> "<text>" [--choice A], questions,
-                               updates [--cursor c] [--wait s] (last line: the next cursor). "-": stdin
+        [--key k]               updates [--cursor c] [--wait s] (last line: the next cursor), receipts
+                               [--since 30m] (what arrived). --key: a retry records nothing new. "-": stdin
   0b sessions                  What your coding sessions are doing now, on every machine and in the cloud
         [--state needs-you]     (--machine m, --repo r); watch: refresh every 5 s
   0b sessions on|off           Post this machine's session states (Claude Code, Codex, Cursor) to your board

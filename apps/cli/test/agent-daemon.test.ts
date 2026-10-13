@@ -103,7 +103,7 @@ describe("agent daemon", () => {
     const ask = events("t_dddd0001").find((e) => e.kind === "permission")!;
     expect([ask.data.tool, ask.data.summary, /^p_/.test(ask.data.request ?? "")]).toEqual(["Bash", "touch hello.txt", true]);
     expect(events("t_dddd0001").at(-1)!.data.state).toBe("waiting");
-    expect((await req({ op: "sessions" })) as unknown).toEqual({ running: [{ tool: "codex", native: expect.any(String), cwd: r.cwd, title: "t_dddd0001", via: "daemon" }] });
+    expect((await req({ op: "sessions" })) as unknown).toEqual({ running: [{ tool: "codex", native: expect.any(String), cwd: r.cwd, title: "t_dddd0001", via: "daemon" }], looked: [] });
     await expect(req({ op: "approve", task: "t_dddd0001", request: "p_nope", decision: "allow" })).rejects.toThrow(/no permission request/);
     await req({ op: "approve", task: "t_dddd0001", request: ask.data.request, decision: "allow" });
     await until(() => Boolean(finished(events("t_dddd0001"))));
@@ -167,6 +167,98 @@ describe("agent daemon", () => {
     daemon.connected(() => true);
     await expect(daemon.request({ t: "req", rid: "r1", op: "send", native: { tool: "claude", id: "w1:p4", cwd: repo }, text: "hi" })).rejects.toThrow(/isn't in a repo agents may use/);
     expect(attached).toEqual([]);
+  });
+
+  // D78: the 2026-10-08 devlead case: "no live sessions" while the session ran, and a send path nobody could see ahead.
+  test("sessions: the ones outside allowed repos are counted, never listed; an empty list says why", async () => {
+    const { repo, other, ctx } = setup({ repos: [] });
+    const herdr = {
+      id: "herdr" as const,
+      available: async () => ({ ok: true }),
+      start: async () => {
+        throw new Error("no");
+      },
+      running: async () => [
+        { native: "w1:p4", cwd: other, tool: "claude" },
+        { native: "w1:p5", cwd: repo, tool: "codex" },
+      ],
+    };
+    const claude = Object.assign(new FakeAdapter("claude", () => DEFAULT_DENY), { running: async () => [{ native: "c065b575", cwd: other, tool: "claude", pid: 1 }] });
+    const tmux = { id: "tmux" as const, available: async () => ({ ok: false }), start: herdr.start, running: async () => [
+        { native: "%1", cwd: other, tool: "claude" },
+        { native: "%2", cwd: repo, tool: "claude" },
+      ] };
+    const daemon = new Daemon(ctx, { adapters: { claude, herdr, tmux }, log: () => {} });
+    daemon.connected(() => true);
+    const ask = () => daemon.request({ t: "req", rid: "r1", op: "sessions" });
+    // No repo allowed: nothing listed, five found, and why. tmux failed its version check but is still asked (nothing that listed before D78 disappears).
+    expect(await ask()).toEqual({
+      running: [],
+      hidden: { count: 5, why: "no repo is allowed on this machine (0b agent allow <path> there)" },
+      looked: ["herdr panes", "tmux panes (its version check failed)", "Claude Code's session files (CLAUDE_CONFIG_DIR or ~/.claude only)"],
+    });
+    // One repo allowed: its session listed, the rest counted as outside it, with no path.
+    saveAgentConfig(ctx, { enabled: true, repos: [{ root: repo, mode: "edit", worktree: true, deny: [] }] });
+    const r = (await ask()) as { running: { native: string }[]; hidden: { count: number; why: string } };
+    expect(r.running.map((s) => s.native)).toEqual(["w1:p5", "%2"]);
+    expect(r.hidden).toEqual({ count: 3, why: "outside the repos agents may use on this machine" });
+    expect(JSON.stringify(r.hidden)).not.toContain(other);
+    // Off: it doesn't look, and says so.
+    saveAgentConfig(ctx, { enabled: false, repos: [] });
+    expect(await ask()).toEqual({ running: [], hidden: { count: 0, why: "agent control is off on this machine, so it doesn't look (0b agent on)" } });
+  });
+
+  test("send-check: whether a send would be taken and by which route, sending, starting and logging nothing", async () => {
+    const { repo, other, ctx, base } = setup({ repos: [] });
+    const sent: string[] = [];
+    const attached: string[] = [];
+    const herdr = {
+      id: "herdr" as const,
+      available: async () => ({ ok: true }),
+      start: async () => {
+        throw new Error("no");
+      },
+      running: async () => [{ native: "w1:p4", cwd: repo, tool: "claude" }],
+      attach: async (n: { id: string }) => {
+        attached.push(n.id);
+        return { native: n.id, send: async (t: string) => void sent.push(t), approve: async () => {}, stop: async () => {}, done: new Promise<{ ok: boolean }>(() => {}) };
+      },
+    };
+    const claude = Object.assign(new FakeAdapter("claude", () => DEFAULT_DENY), { running: async () => [{ native: "live-1", cwd: repo, tool: "claude", pid: 4242 }] });
+    const daemon = new Daemon(ctx, { adapters: { claude, codex: new FakeAdapter("codex", () => DEFAULT_DENY), herdr }, log: () => {} });
+    daemon.connected(() => true);
+    const check = (r: Record<string, unknown>) => daemon.request({ t: "req", rid: "r1", op: "send-check", ...r } as HubRequest) as Promise<{ ok: boolean; why?: string; route: string | null; repos: number; notes: string[] }>;
+    // No repo allowed (dgithost's repos: none): refused, with the reason, and that 0bridge won't widen it.
+    const none = await check({ native: { tool: "claude-code", id: "c065b575-6bba-47e0-ad0a-c5fe59a2512d", cwd: repo } });
+    expect(none).toMatchObject({ ok: false, route: null, repos: 0, why: expect.stringMatching(/isn't in a repo agents may use/) });
+    expect(none.notes.join(" ")).toMatch(/No repo is allowed .* never widens it/);
+    saveAgentConfig(ctx, { enabled: true, repos: [{ root: repo, mode: "edit", worktree: true, deny: [] }] });
+    // Outside the allowed repo, and a bad id: refused.
+    expect(await check({ native: { tool: "claude", id: "x1", cwd: other } })).toMatchObject({ ok: false, why: expect.stringMatching(/isn't in a repo/), repos: 1 });
+    expect(await check({ native: { tool: "claude", id: "--dangerously-skip-permissions", cwd: repo } })).toMatchObject({ ok: false, why: "bad session id" });
+    expect(await check({ native: { tool: "cursor", id: "x1", cwd: repo } })).toMatchObject({ ok: false, why: "can't send to cursor sessions" });
+    // A herdr pane: allowed, typed with Enter, and the warning that it answers whatever prompt shows.
+    const pane = await check({ native: { tool: "claude", id: "w1:p4", cwd: repo } });
+    expect(pane).toMatchObject({ ok: true, route: "herdr" });
+    expect(pane.notes.join(" ")).toMatch(/types the text .* presses Enter.* not a safe queue for a prompt nobody has read/);
+    // A Claude Code session open in a terminal, keys off: refused (no second writer), and why.
+    const open = await check({ native: { tool: "claude", id: "live-1", cwd: repo } });
+    expect(open).toMatchObject({ ok: false, why: expect.stringMatching(/open in a terminal/) });
+    expect(open.notes.join(" ")).toMatch(/only in a repo that allows it \(keys\)/);
+    // Not open anywhere it can see: a headless resume, said as such.
+    const cold = await check({ native: { tool: "claude", id: "cold-1", cwd: repo } });
+    expect(cold).toMatchObject({ ok: true, route: "headless" });
+    expect(cold.notes.join(" ")).toMatch(/resume it headless: a new process writing to that session/);
+    // A task: unknown, or from its log.
+    expect(await check({ task: "t_zzzz0001" })).toMatchObject({ ok: false, why: expect.stringMatching(/no task t_zzzz0001/) });
+    // Nothing was sent, attached, started or logged.
+    expect([sent, attached]).toEqual([[], []]);
+    expect((daemon as any).tasks.size).toBe(0);
+    expect(existsSync(join(ctx.storeDir, "agent", "tasks"))).toBe(false);
+    // The real send still goes the same way: the herdr pane gets it.
+    await daemon.request({ t: "req", rid: "r2", op: "send", native: { tool: "claude", id: "w1:p4", cwd: repo }, text: "hi" } as HubRequest);
+    expect([attached, sent]).toEqual([["w1:p4"], ["hi"]]);
+    expect(base).toBeTruthy();
   });
 
   test("with a supervisor set up, the hello names it and host requests, frames and acks go through it", async () => {

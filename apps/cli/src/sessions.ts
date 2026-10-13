@@ -23,7 +23,7 @@ import {
   type ToolId,
 } from "@0bridge/core";
 import { cloudClient } from "./cloud.ts";
-import { statusDir, statusLockPath, statusMarksDir, takeStatusMarks, type LiveState, type StatusMark } from "./hook.ts";
+import { statusDir, statusLockPath, statusMarksDir, takeStatusMarks, type LiveState, type NeedKind, type NeedWhy, type StatusMark } from "./hook.ts";
 import { binPath, ensureBin } from "./service.ts";
 import { vaultValues } from "./vault.ts";
 import { c } from "./ui.ts";
@@ -35,7 +35,9 @@ import { c } from "./ui.ts";
  * the hook, one per machine) turns marks into updates — the repo, the branch, a title and at most
  * two lines, secrets masked here — and posts them, the first at once and then at most one POST per
  * 2 s. While a session waits for you it looks at its transcript every 3 s: once it grows, you
- * answered, and the session is working again.
+ * answered, and the session is working again. When it can't tell any more (10 minutes passed, or
+ * the transcript can't be read) the wait is posted as unconfirmed since then, never left
+ * standing as if it had just been seen.
  */
 
 export interface SessionsOptions {
@@ -54,6 +56,11 @@ export interface StatusUpdate {
   native: string;
   state: LiveState;
   reason?: "permission" | "input";
+  /** needs-you: what it waits on, why unverified, when the hook saw it, and since when nothing here can confirm it. */
+  need?: NeedKind;
+  needWhy?: NeedWhy;
+  observedAt?: number;
+  unconfirmedAt?: number;
   at: number;
   cwd?: string;
   repo?: string;
@@ -76,6 +83,11 @@ export interface BoardEntry {
   title: string | null;
   state: LiveState;
   reason: "permission" | "input" | null;
+  /** Null from a 0b before D78, or when not waiting. */
+  need?: NeedKind | null;
+  needWhy?: NeedWhy | null;
+  observedAt?: number | null;
+  unconfirmedSince?: number | null;
   lines: string[];
   since: number;
   updatedAt: number;
@@ -85,6 +97,8 @@ export interface BoardEntry {
 export interface Board {
   entries: BoardEntry[];
   counts: Record<LiveState, number>;
+  /** Of the sessions that need you, how many are unverified or unconfirmed. */
+  unsure?: number;
   now: number;
 }
 
@@ -203,11 +217,15 @@ export class StatusWorker {
     if (title && title !== this.d.titles.get(id)) this.d.titles.set(id, title);
     const repo = m.cwd ? this.d.repo(m.cwd) : undefined;
     const branch = m.cwd ? this.branch(m.cwd) : undefined;
+    const waits = m.state === "needs-you";
     return {
       tool: m.tool,
       native: m.native,
       state: m.state,
       ...(m.reason ? { reason: m.reason } : {}),
+      ...(waits && m.need ? { need: m.need } : {}),
+      ...(waits && m.needWhy ? { needWhy: m.needWhy } : {}),
+      ...(waits ? { observedAt: m.at } : {}),
       at: m.at,
       ...(m.cwd ? { cwd: m.cwd } : {}),
       ...(repo ? { repo } : {}),
@@ -218,7 +236,11 @@ export class StatusWorker {
     };
   }
 
-  /** Queue the marks: the newest per session wins; one that needs you starts a watch, anything else ends it. */
+  /**
+   * Queue the marks: the newest per session wins; one that needs you starts a watch, anything else
+   * ends it. A wait whose transcript can't be read (or that names none) can't be watched, so it
+   * goes up unconfirmed from the start.
+   */
   collect(marks: StatusMark[]): void {
     for (const m of [...marks].sort((a, b) => a.at - b.at)) {
       const id = `${m.tool}:${m.native}`;
@@ -227,23 +249,32 @@ export class StatusWorker {
       const u = this.update(m);
       this.pending.set(id, u);
       this.watching.delete(id);
-      if (m.state === "needs-you" && m.transcript) {
-        const size = this.d.size(m.transcript);
-        if (size !== null) this.watching.set(id, { transcript: m.transcript, size, since: this.d.now(), update: u });
+      if (m.state === "needs-you") {
+        const size = m.transcript ? this.d.size(m.transcript) : null;
+        if (m.transcript && size !== null) this.watching.set(id, { transcript: m.transcript, size, since: this.d.now(), update: u });
+        else this.pending.set(id, { ...u, unconfirmedAt: this.d.now() });
       }
     }
     if (marks.length) this.d.titles.save();
   }
 
-  /** Sessions that needed you and whose transcript grew since: you answered, they work again. */
+  /**
+   * Sessions that needed you and whose transcript grew since: you answered, they work again. One
+   * watched for 10 minutes, or whose transcript can't be read now, goes up as unconfirmed since
+   * now, with the time the hook saw it; its `at` stays the hook's, so any newer mark still wins.
+   */
   watch(): void {
     const now = this.d.now();
     for (const [id, w] of this.watching) {
       const size = this.d.size(w.transcript);
-      if (size === null || now - w.since > WATCH_MAX_MS) this.watching.delete(id);
-      else if (size > w.size) {
+      if (size === null || now - w.since > WATCH_MAX_MS) {
         this.watching.delete(id);
-        const { reason: _, ...rest } = w.update;
+        // A newer mark for this session waiting to go up says more than this one.
+        const queued = this.pending.get(id);
+        if (!queued || queued === w.update) this.pending.set(id, { ...w.update, unconfirmedAt: now });
+      } else if (size > w.size) {
+        this.watching.delete(id);
+        const { reason: _r, need: _n, needWhy: _w, observedAt: _o, unconfirmedAt: _u, ...rest } = w.update;
         this.pending.set(id, { ...rest, state: "working", at: now, lines: [] });
       }
     }
@@ -504,22 +535,47 @@ export function age(ms: number): string {
   return h < 48 ? `${h}h` : `${Math.floor(h / 24)}d`;
 }
 
+const hhmm = (ms: number) => `${new Date(ms).toISOString().slice(11, 16)} UTC`;
+const WHY: Record<NeedWhy, string> = { "message-only": "no notice type, only its words", "bypass-mode": "no type or tool, and the session skips permissions", "no-tool": "no tool named" };
+
+/** A row's label: a session waiting on something nothing here can confirm says so instead of NEEDS YOU. */
+export function stateLabel(e: Pick<BoardEntry, "state" | "need" | "unconfirmedSince">): string {
+  if (e.state !== "needs-you") return STATE_LABEL[e.state];
+  return e.unconfirmedSince ? "UNCONFIRMED" : e.need === "unverified" ? "UNVERIFIED" : "NEEDS YOU";
+}
+
+/** What a waiting session waits on, when its hook saw that, and since when it's unconfirmed: "pending approval, seen 11:42 UTC". */
+export function needNote(e: Pick<BoardEntry, "state" | "reason" | "need" | "needWhy" | "observedAt" | "unconfirmedSince">): string | undefined {
+  if (e.state !== "needs-you") return undefined;
+  const kind =
+    e.need === "approval"
+      ? "pending approval"
+      : e.need === "input"
+        ? "waiting for input"
+        : e.need === "unverified"
+          ? `unverified permission notice${e.needWhy ? ` (${WHY[e.needWhy] ?? e.needWhy})` : ""}`
+          : `${e.reason ?? "waiting"}, kind not reported`;
+  return [kind, e.observedAt ? `seen ${hhmm(e.observedAt)}` : null, e.unconfirmedSince ? `unconfirmed since ${hhmm(e.unconfirmedSince)}` : null].filter(Boolean).join(", ");
+}
+
 /** The board as lines for a terminal: a header with the counts, then one row per session, needs-you first. */
 export function renderBoard(b: Board, color = true): string[] {
   const paint = (s: LiveState, t: string) => (!color ? t : s === "needs-you" ? c.bold(c.yellow(t)) : s === "error" ? c.red(t) : s === "working" ? c.cyan(t) : c.dim(t));
   const dim = (t: string) => (color ? c.dim(t) : t);
   const n = b.counts;
-  const out = [`${n["needs-you"]} ${n["needs-you"] === 1 ? "needs" : "need"} you · ${n.working} working · ${n.idle} idle${n.error ? ` · ${n.error} failed` : ""}`];
+  const unsure = b.unsure ? ` (${b.unsure} unverified or unconfirmed)` : "";
+  const out = [`${n["needs-you"]} ${n["needs-you"] === 1 ? "needs" : "need"} you${unsure} · ${n.working} working · ${n.idle} idle${n.error ? ` · ${n.error} failed` : ""}`];
   if (!b.entries.length) return out;
   const rows = b.entries.map((e) => ({
     e,
-    cols: [STATE_LABEL[e.state], e.machine, TOOL_NAME[e.tool] ?? e.tool, e.repo ? `${e.repo.replace(/^github\.com\//, "")}${e.branch ? `@${e.branch}` : ""}` : (e.cwd ?? "?"), age(b.now - e.since) + (e.stale ? "?" : "")],
+    cols: [stateLabel(e), e.machine, TOOL_NAME[e.tool] ?? e.tool, e.repo ? `${e.repo.replace(/^github\.com\//, "")}${e.branch ? `@${e.branch}` : ""}` : (e.cwd ?? "?"), age(b.now - e.since) + (e.stale ? "?" : "")],
   }));
   const width = rows[0]!.cols.map((_, i) => Math.min(Math.max(...rows.map((r) => r.cols[i]!.length)), 40));
   for (const { e, cols } of rows) {
     const [state, ...rest] = cols.map((col, i) => col.slice(0, 40).padEnd(width[i]!));
     const said = e.lines[0] ?? e.title;
-    out.push(`${paint(e.state, state!)}  ${rest.join("  ")}${said ? `  ${dim(`"${said.slice(0, 100)}"`)}` : ""}`);
+    const note = needNote(e);
+    out.push(`${paint(e.state, state!)}  ${rest.join("  ")}${note ? `  [${note}]` : ""}${said ? `  ${dim(`"${said.slice(0, 100)}"`)}` : ""}`);
   }
   return out;
 }

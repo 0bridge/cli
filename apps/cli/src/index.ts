@@ -194,10 +194,12 @@ ${c.bold("Usage")}
   0b drive sync [dir] | status [dir] | unlink [dir]   Sync now, see what differs, stop syncing (files stay)
   0b drive email <folder>       The folder's email address: mail from you or your team lands there
   0b webhook add <name>         An address other services send events to (--preset channeltalk|github|generic);
-                                asks what each event does: run a command here, forward it, start an agent,
-                                notify you, or store it for agents (--route run|forward|agent|notify|store)
+                                asks what each event does: run a command here, or a session listens for it
+                                (also forward, agent, notify, routine; --route run|listen|forward|agent|notify|routine)
   0b webhook run <name> [--debounce 30] [--timeout 300] [--machine <m>] -- <command…>
                                 Run a command on this machine for each event (event JSON on stdin); --off stops
+  0b webhook listen <name>      Wait for the webhook's next event and print it, then end: run it in the background
+                                in a session, handle the event, listen again (an event that came meanwhile comes at once)
   0b webhook listen [on|off]    Keep this machine connected for webhook runs (installed by \`run\`)
   0b webhook set <name> --route …   Change what a webhook does; forward-secret <name> makes a new signing secret
   0b webhook token <name>       Use the token the sender made (Channel Talk adds its own ?token= to the address)

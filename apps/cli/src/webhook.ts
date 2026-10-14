@@ -5,13 +5,16 @@ import { cloudClient } from "./cloud.ts";
 import { installService, serviceInstalled } from "./service.ts";
 import { c, p, tilde } from "./ui.ts";
 import { RUN_DEFAULTS, RUN_MAX, currentRuns, loadRuns, logPath, machineName, runListener, saveRuns, type LocalRun } from "./webhook-run.ts";
+import { listenOnce } from "./webhook-listen.ts";
 
 /**
  * `0b webhook` (round 2, D54; drive-plus §4.9): addresses other services send events to (Channel
  * Talk, GitHub, any Standard Webhooks sender), what each one does with them, and the events
- * received. Each event can run a command on one of your machines (run: the command stays on that
- * machine, in ~/.0bridge/webhooks.json, and never goes to the server), be forwarded to a URL
- * (signed), start a coding agent, notify you, or be stored for agents to read (Store, the default).
+ * received. Two ways first (T-088): run a command on one of your machines for each event (run: the
+ * command stays on that machine, in ~/.0bridge/webhooks.json, and never goes to the server), or
+ * nothing runs and a session listens (`0b webhook listen <name>` ends with the next event; the
+ * route is stored as "queue", the default). An event can also be forwarded to a URL (signed),
+ * start a coding agent, notify you, or start a Routine.
  * A routine's bearer token is typed hidden in the terminal or piped in, never given as a flag
  * (flags end up in shell history and agents' transcripts). Event data is outside input; this only
  * shows it.
@@ -133,16 +136,16 @@ const TTY_IO: WebhookIo = {
 };
 
 const PRESETS = ["channeltalk", "github", "generic", "trello"] as const;
-/** What --route takes; "queue" still works (older scripts) and means store. */
-const ROUTES = ["run", "forward", "agent", "notify", "store", "routine"] as const;
+/** What --route takes; "store" and "queue" still work (older scripts) and mean listen. */
+const ROUTES = ["run", "listen", "forward", "agent", "notify", "routine"] as const;
 const TITLE: Record<Endpoint["preset"], string> = { channeltalk: "Channel Talk", github: "GitHub", trello: "Trello", generic: "Generic (Standard Webhooks)" };
 /** The action prompt of `0b webhook add`, in the order people pick them. */
 const ACTIONS: { value: (typeof ROUTES)[number]; label: string; hint: string }[] = [
   { value: "run", label: "Run a command on this machine", hint: "a script you have here; the event's JSON on its input" },
+  { value: "listen", label: "A session listens for it", hint: "nothing runs; 0b webhook listen <name> in a session ends with the next event" },
   { value: "forward", label: "Forward to a URL", hint: "a signed POST to your own server" },
   { value: "agent", label: "Start a coding agent", hint: "Claude Code, Codex or Gemini in a repo, plan mode" },
   { value: "notify", label: "Notify me", hint: "ntfy or email" },
-  { value: "store", label: "Store for agents to read", hint: "nothing runs; agents read events with bridge__events_poll" },
   { value: "routine", label: "Start a Claude Code Routine", hint: "its fire URL and bearer token" },
 ];
 
@@ -173,7 +176,7 @@ export function routeText(e: Pick<Endpoint, "route" | "notify" | "types">): stri
             ? `runs a command on ${r.machine ?? "your machine"}`
             : r.kind === "forward"
               ? `forwards to ${hostOf(r.url)}`
-              : "stored for agents to read";
+              : "kept for a session to listen for";
   return `${what}${e.notify && r.kind !== "notify" ? ", and notifies you" : ""}${e.types ? ` (only ${e.types.join(", ")})` : ""}`;
 }
 
@@ -243,7 +246,7 @@ export function setupSteps(preset: Endpoint["preset"], url: string, name: string
   ];
 }
 
-const kindName = (k: string) => (k === "queue" ? "store" : k);
+const kindName = (k: string) => (k === "queue" ? "listen" : k);
 
 function eventLine(e: StoredEvent): string {
   const k = kindName(e.route.kind);
@@ -259,11 +262,11 @@ async function find(client: CloudClient, name: string | undefined, usage: string
   return e;
 }
 
-/** The action for `add`: --route, else asked on a terminal, else store. */
+/** The action for `add`: --route, else asked on a terminal, else listen. */
 async function pickRoute(opts: WebhookOptions, io: WebhookIo): Promise<string> {
   if (opts.route) return opts.route;
   if (opts.command?.length) return "run";
-  if (!io.interactive) return "store";
+  if (!io.interactive) return "listen";
   const v = await io.select("What should each event do?", ACTIONS);
   if (v === null) process.exit(0);
   return v;
@@ -271,10 +274,11 @@ async function pickRoute(opts: WebhookOptions, io: WebhookIo): Promise<string> {
 
 /** Turn the flags (and, on a terminal, answers) into a request's route. */
 async function routeFrom(kind: string, opts: WebhookOptions, io: WebhookIo): Promise<{ route?: Record<string, unknown>; routineToken?: string }> {
-  if (kind === "queue") kind = "store";
+  if (kind === "queue" || kind === "store") kind = "listen";
   if (!(ROUTES as readonly string[]).includes(kind)) throw new Error(`--route is ${ROUTES.join(", ")}`);
   const template = opts.template ? readFileSync(opts.template, "utf8") : undefined;
-  if (kind === "store") return { route: { kind: "store" } };
+  // "store" on the wire: gateways from before listen don't know the name.
+  if (kind === "listen") return { route: { kind: "store" } };
   if (kind === "notify") return { route: { kind, ...(template ? { template } : {}) } };
   if (kind === "run") return { route: { kind, ...(opts.machine ? { machine: opts.machine } : {}) } };
   if (kind === "forward") {
@@ -396,7 +400,7 @@ export async function webhookCommand(ctx: Context, args: string[], opts: Webhook
     }
 
     case "add": {
-      if (!name) throw new Error("usage: 0b webhook add <name> [--preset channeltalk|github|generic] [--route run|forward|agent|notify|store|routine] …");
+      if (!name) throw new Error("usage: 0b webhook add <name> [--preset channeltalk|github|generic] [--route run|listen|forward|agent|notify|routine] …");
       const preset = opts.preset ?? "generic";
       if (!(PRESETS as readonly string[]).includes(preset)) throw new Error(`--preset is ${PRESETS.join(", ")}`);
       const kind = await pickRoute(opts, io);
@@ -452,7 +456,7 @@ export async function webhookCommand(ctx: Context, args: string[], opts: Webhook
           installService(ctx, "webhook", null, {});
           console.log(c.dim("  No commands left here, so this machine stopped listening for webhook runs."));
         }
-        console.log(c.dim(`  Its route is unchanged: other machines with a command still run it. To store events instead: 0b webhook set ${name} --route store`));
+        console.log(c.dim(`  Its route is unchanged: other machines with a command still run it. To have a session listen instead: 0b webhook set ${name} --route listen`));
         return;
       }
       const argv = opts.command ?? [];
@@ -483,7 +487,14 @@ export async function webhookCommand(ctx: Context, args: string[], opts: Webhook
     }
 
     case "listen": {
+      // `listen` alone (and on|off) is this machine's runner for run routes; with a webhook's name, a session listens for its next event.
       const arg = args[1];
+      if (arg !== undefined && arg !== "on" && arg !== "off") {
+        const e = await find(client, arg, "0b webhook listen <name>");
+        process.stderr.write(c.dim(`Listening for ${e.name}: this ends with its next event (Ctrl-C stops).\n`));
+        if (!(await listenOnce(ctx, e))) process.exitCode = 130;
+        return;
+      }
       if (arg === "on") {
         const where = ensureListener(ctx);
         return console.log(where ? `${c.green("✓")} this machine stays connected for webhook runs (service: ${where})` : "");
@@ -492,13 +503,12 @@ export async function webhookCommand(ctx: Context, args: string[], opts: Webhook
         installService(ctx, "webhook", null, {});
         return console.log(`${c.green("✓")} this machine no longer listens for webhook runs (its commands stay saved; \`0b webhook listen on\` resumes)`);
       }
-      if (arg !== undefined) throw new Error("usage: 0b webhook listen [on|off]");
       return runListener(ctx);
     }
 
     case "set": {
-      const e = await find(client, name, "0b webhook set <name> --route run|forward|agent|notify|store|routine …");
-      if (!opts.route && opts.notify === undefined) throw new Error("say what to change: --route run|forward|agent|notify|store|routine (with its options), or --notify");
+      const e = await find(client, name, "0b webhook set <name> --route run|listen|forward|agent|notify|routine …");
+      if (!opts.route && opts.notify === undefined) throw new Error("say what to change: --route run|listen|forward|agent|notify|routine (with its options), or --notify");
       const body: Record<string, unknown> = {};
       if (opts.route) Object.assign(body, await routeFrom(opts.route, opts, io));
       if (opts.notify !== undefined) body.notify = opts.notify;

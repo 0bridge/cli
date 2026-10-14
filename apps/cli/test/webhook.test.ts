@@ -163,13 +163,13 @@ describe("0b webhook", () => {
     expect(out.join("\n")).toContain('"registrationSupported": false');
     await expect(webhookCommand(ctx, ["trello-compatibility", "untrusted"], { board }, io())).rejects.toThrow("exactly one");
   });
-  test("add: the preset, the URL with its token once, and the setup steps; signed in with the device token; Store by default", async () => {
+  test("add: the preset, the URL with its token once, and the setup steps; signed in with the device token; Listen by default", async () => {
     await webhookCommand(ctx, ["add", "support"], { preset: "channeltalk" }, io());
     const post = reqs.find((r) => r.method === "POST")!;
     expect(post.auth).toBe("Bearer 0b_device_token");
     expect(post.body).toEqual({ name: "support", preset: "channeltalk" });
     const text = out.join("\n");
-    expect(text).toContain("support: stored for agents to read");
+    expect(text).toContain("support: kept for a session to listen for");
     expect(text).toContain("URL:     http://gw/hook/wh_support?token=tok123");
     expect(text).not.toContain("Secret:");
     expect(text).toContain("Desk → Settings → Webhook");
@@ -194,15 +194,15 @@ describe("0b webhook", () => {
   test("add on a terminal without --route asks what each event does; run asks for the command and keeps it here", async () => {
     const ask = io(null, { interactive: true, picks: ["run"], texts: [`python3 sync.py --label "new chat" '$(touch pwned)'`] });
     await webhookCommand(ctx, ["add", "support"], { preset: "channeltalk" }, ask);
-    expect(ask.prompts[0]).toBe("What should each event do? [run,forward,agent,notify,store,routine]");
+    expect(ask.prompts[0]).toBe("What should each event do? [run,listen,forward,agent,notify,routine]");
     expect(reqs.at(-1)!.body).toEqual({ name: "support", preset: "channeltalk", route: { kind: "run" } });
     const runs = loadRuns(ctx)!;
     expect(runs).toMatchObject({ v: 1, userId: "user1", server: `http://localhost:${server.port}` });
     expect(runs.runs.support).toMatchObject({ argv: ["python3", "sync.py", "--label", "new chat", "$(touch pwned)"], cwd: process.cwd(), timeoutSec: 300, debounceSec: 0 });
     expect(reqs.some((r) => r.raw.includes("sync.py"))).toBe(false);
     expect(out.join("\n")).toContain("Runs here: python3 sync.py --label 'new chat' '$(touch pwned)'");
-    // Picking store sends no route.
-    await webhookCommand(ctx, ["add", "quiet"], {}, io(null, { interactive: true, picks: ["store"] }));
+    // Picking listen sends no route.
+    await webhookCommand(ctx, ["add", "quiet"], {}, io(null, { interactive: true, picks: ["listen"] }));
     expect(reqs.at(-1)!.body).toEqual({ name: "quiet", preset: "generic" });
     // Off a terminal nothing is asked.
     const piped = io(null, { picks: ["run"] });
@@ -227,7 +227,7 @@ describe("0b webhook", () => {
     expect(out.join("\n")).toContain("orders: forwards to hooks.example.com");
     expect(out.join("\n")).toContain("Forward secret: whsec_Zm9yd2FyZA==");
     await expect(webhookCommand(ctx, ["add", "x"], { route: "forward" }, io())).rejects.toThrow("--url");
-    await expect(webhookCommand(ctx, ["add", "x"], { route: "pipe" }, io())).rejects.toThrow("--route is run, forward, agent, notify, store, routine");
+    await expect(webhookCommand(ctx, ["add", "x"], { route: "pipe" }, io())).rejects.toThrow("--route is run, listen, forward, agent, notify, routine");
   });
 
   test("add --route agent: plan by default; edit refused for anything but plan|edit; step-up points at the dashboard", async () => {
@@ -378,10 +378,12 @@ describe("0b webhook", () => {
     out = [];
     await expect(webhookCommand(ctx, ["events", "support"], { follow: true }, io())).rejects.toThrow("stop following");
     expect(out.join("\n")).toContain("Message.push");
-    expect(out.join("\n")).toContain("store stored");
+    expect(out.join("\n")).toContain("listen stored");
     expect(reqs.find((r) => r.path === "/api/triggers/events")!.query).toEqual({ limit: "50", endpoint: "support" });
 
     await expect(webhookCommand(ctx, ["rm", "nope"], {}, io())).rejects.toThrow("no webhook named nope");
+    // A session listening for a webhook that isn't there is told so before it waits.
+    await expect(webhookCommand(ctx, ["listen", "nope"], {}, io())).rejects.toThrow("no webhook named nope");
     const id = endpoints[0]!.id;
     await webhookCommand(ctx, ["rm", "support"], { yes: true }, io());
     expect(reqs.at(-1)).toMatchObject({ method: "DELETE", path: `/api/triggers/${id}` });

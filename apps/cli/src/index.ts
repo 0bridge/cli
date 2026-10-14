@@ -190,18 +190,19 @@ ${c.bold("Usage")}
         [--state needs-you]     (--machine m, --repo r); watch: refresh every 5 s
   0b sessions on|off           Post this machine's session states (Claude Code, Codex, Cursor) to your board
   0b drive ls [folder]          Your Drive (and your teams' with --workspace <team>): files, and a folder's README
-  0b drive clone <folder> [dir] A local folder that syncs both ways with a Drive folder ("" for all of it)
+  0b drive clone <folder> [dir] A local folder that syncs both ways with a Drive folder ("" for all of it),
+                                each time 0b drive sync runs in it (before you read or edit, and after you write)
   0b drive sync [dir] | status [dir] | unlink [dir]   Sync now, see what differs, stop syncing (files stay)
   0b drive email <folder>       The folder's email address: mail from you or your team lands there
   0b webhook add <name>         An address other services send events to (--preset channeltalk|github|generic);
                                 asks what each event does: run a command here, or a session listens for it
-                                (also forward, agent, notify, routine; --route run|listen|forward|agent|notify|routine)
+                                (--route run|listen; --notify also notifies you)
   0b webhook run <name> [--debounce 30] [--timeout 300] [--machine <m>] -- <command…>
                                 Run a command on this machine for each event (event JSON on stdin); --off stops
   0b webhook listen <name>      Wait for the webhook's next event and print it, then end: run it in the background
                                 in a session, handle the event, listen again (an event that came meanwhile comes at once)
   0b webhook listen [on|off]    Keep this machine connected for webhook runs (installed by \`run\`)
-  0b webhook set <name> --route …   Change what a webhook does; forward-secret <name> makes a new signing secret
+  0b webhook set <name> --route run|listen | --notify   Change what a webhook does
   0b webhook token <name>       Use the token the sender made (Channel Talk adds its own ?token= to the address)
   0b webhook list | rm | test | rotate <name> | events [name] [--follow]
   0b usage [--days 30]         Tokens and estimated cost by tool, model, repo or day (--by)
@@ -219,7 +220,7 @@ ${c.bold("Usage")}
   0b clip paste [dir]          Save what's waiting here (over SSH too) and print the paths
   0b clip shims [off]          On a Linux server: ⌃V in Claude Code pastes the image you last copied on your Mac,
                                received as you copy it (clip sync on|off does the same there)
-  0b background [on|off]       Run (or schedule every 15 min) the history, context, personal file and Drive folder sync
+  0b background [on|off]       Run (or schedule every 15 min) the history, context and personal file sync
   0b tool enable|disable <tool>
   0b update [--check]          Install the newest 0b (and restart its background jobs); --check only looks
   0b login [--web]             Sign in with a one-time code (works over SSH too); --web uses a browser redirect
@@ -638,8 +639,6 @@ async function main() {
       preset: { type: "string" },
       board: { type: "string" },
       route: { type: "string" },
-      "routine-url": { type: "string" },
-      template: { type: "string" },
       agent: { type: "string" },
       machine: { type: "string" },
       notify: { type: "boolean" },
@@ -788,17 +787,11 @@ async function main() {
         preset: values.preset,
         board: values.board,
         route: values.route,
-        repo: values.repo,
-        agent: values.agent,
         machine: values.machine,
-        mode: values.mode,
-        template: values.template,
-        routineUrl: values["routine-url"],
         notify: values.notify,
         follow: values.follow,
         json: values.json,
         yes: values.yes,
-        url: values.url,
         debounce: values.debounce,
         timeout: values.timeout,
         off: values.off,

@@ -1,12 +1,12 @@
 /**
  * `0b webhook` (src/webhook.ts) against a fake gateway (Bun.serve), with a temp home and the file
- * secret store: add (each route, and the action prompt on a terminal), run (the command saved here,
- * never sent), set, forward-secret, listen, list, rm, rotate, test (waiting for a run's result) and
- * events; a routine's bearer comes from the hidden prompt or stdin, never a flag.
+ * secret store: add (run or listen, the removed routes refused, and the action prompt on a
+ * terminal), run (the command saved here, never sent), set, listen, list, rm, rotate, test (waiting
+ * for a run's result) and events.
  *   bun test apps/cli/test/webhook.test.ts
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deviceTokenKey, openSecretStore, saveCloud, type Context } from "@0bridge/core";
@@ -19,10 +19,9 @@ process.env.NO_COLOR = "1";
 type Req = { method: string; path: string; query: Record<string, string>; auth: string | null; body: unknown; raw: string };
 let reqs: Req[] = [];
 let endpoints: Endpoint[] = [];
-let createStatus = 201;
 /** What GET /triggers/events/:id answers, in turn (a run's result arriving). */
 let polls: StoredEvent["route"][] = [];
-let testRoute: StoredEvent["route"] = { kind: "agent", ok: true, detail: "started on devbox (claude, plan)", task: "t_00000001" };
+let testRoute: StoredEvent["route"] = { kind: "queue", ok: true, detail: "stored" };
 
 const endpoint = (name: string, extra: Partial<Endpoint> = {}): Endpoint => ({
   id: `wh_${name.padEnd(20, "0").slice(0, 20)}`,
@@ -64,16 +63,15 @@ const server = Bun.serve({
       return Response.json({ rest: "accepted", status: 200, signingSecretAvailable: false, registrationSupported: false });
     if (path === "/triggers" && r.method === "GET") return Response.json(endpoints);
     if (path === "/triggers" && r.method === "POST") {
-      const b = body as { name: string; preset: Endpoint["preset"]; route?: Record<string, unknown> };
-      if (createStatus !== 201) return Response.json({ error: "Confirm it's you with your passkey first.", code: "STEP_UP_REQUIRED" }, { status: createStatus });
-      const e = endpoint(b.name, { preset: b.preset, route: stored(b.route) as Endpoint["route"], verify: b.preset === "channeltalk" ? { mode: "query", param: "token" } : { mode: "standard" } });
+      const b = body as { name: string; preset: Endpoint["preset"]; route?: Record<string, unknown>; notify?: boolean };
+      const e = endpoint(b.name, { preset: b.preset, route: stored(b.route) as Endpoint["route"], notify: b.notify === true, verify: b.preset === "channeltalk" ? { mode: "query", param: "token" } : { mode: "standard" } });
       endpoints.push(e);
       const secret = b.preset === "channeltalk" ? "tok123" : "whsec_c2VjcmV0";
-      return Response.json({ endpoint: e, secret, url: b.preset === "channeltalk" ? `${e.url}?token=${secret}` : e.url, ...(e.route.kind === "forward" ? { forwardSecret: "whsec_Zm9yd2FyZA==" } : {}) }, { status: 201 });
+      return Response.json({ endpoint: e, secret, url: b.preset === "channeltalk" ? `${e.url}?token=${secret}` : e.url }, { status: 201 });
     }
     const ev = /^\/triggers\/events\/([^/]+)$/.exec(path);
     if (ev) return Response.json(testEvent(polls.shift() ?? { kind: "run", ok: null, detail: "sent to mbp" }));
-    const m = /^\/triggers\/([^/]+)(?:\/(rotate|test|forward-secret))?$/.exec(path);
+    const m = /^\/triggers\/([^/]+)(?:\/(rotate|test))?$/.exec(path);
     if (path === "/triggers/events")
       return Response.json({
         events: u.searchParams.get("cursor") ? [] : [{ id: "ev_1", seq: 1, endpoint: "support", eventId: "m-1", type: "Message.push", receivedAt: 0, verified: true, size: 10, data: { hi: 1 }, route: { kind: "queue", ok: true, detail: "stored" } }],
@@ -87,12 +85,10 @@ const server = Bun.serve({
     if (m && r.method === "PATCH") {
       const e = endpoints.find((x) => x.id === m[1])!;
       const b = body as { route?: Record<string, unknown> };
-      const was = e.route.kind;
       if (b.route) e.route = stored(b.route) as Endpoint["route"];
-      return Response.json({ ...e, ...(e.route.kind === "forward" && was !== "forward" ? { forwardSecret: "whsec_bmV3" } : {}) });
+      return Response.json(e);
     }
     if (m?.[2] === "rotate") return Response.json({ secret: "tok456", url: `http://gw/hook/${m[1]}?token=tok456` });
-    if (m?.[2] === "forward-secret") return Response.json({ secret: "whsec_cm90YXRlZA==" });
     if (m?.[2] === "test") return Response.json(testEvent(testRoute));
     return Response.json({ error: "not found" }, { status: 404 });
   },
@@ -101,16 +97,11 @@ const server = Bun.serve({
 let ctx: Context;
 let out: string[] = [];
 const realLog = console.log;
-const io = (bearer: string | null = null, o: { interactive?: boolean; picks?: string[]; texts?: string[]; confirms?: boolean[] } = {}) => {
+const io = (_unused: null = null, o: { interactive?: boolean; picks?: string[]; texts?: string[]; confirms?: boolean[] } = {}) => {
   const asked: string[] = [];
   const x = {
-    asked: 0,
     prompts: asked,
     interactive: o.interactive ?? false,
-    async bearer() {
-      x.asked++;
-      return bearer;
-    },
     async confirm(message: string) {
       asked.push(message);
       return o.confirms?.shift() ?? true;
@@ -127,7 +118,7 @@ const io = (bearer: string | null = null, o: { interactive?: boolean; picks?: st
       if (!polls.length) throw new Error("stop following");
     },
   };
-  return x as WebhookIo & { asked: number; prompts: string[] };
+  return x as WebhookIo & { prompts: string[] };
 };
 
 beforeAll(() => {
@@ -140,9 +131,8 @@ afterAll(() => server.stop(true));
 beforeEach(() => {
   reqs = [];
   endpoints = [];
-  createStatus = 201;
   polls = [];
-  testRoute = { kind: "agent", ok: true, detail: "started on devbox (claude, plan)", task: "t_00000001" };
+  testRoute = { kind: "queue", ok: true, detail: "stored" };
   out = [];
   rmSync(runsPath(ctx), { force: true });
   console.log = (...a: unknown[]) => void out.push(a.join(" "));
@@ -194,7 +184,7 @@ describe("0b webhook", () => {
   test("add on a terminal without --route asks what each event does; run asks for the command and keeps it here", async () => {
     const ask = io(null, { interactive: true, picks: ["run"], texts: [`python3 sync.py --label "new chat" '$(touch pwned)'`] });
     await webhookCommand(ctx, ["add", "support"], { preset: "channeltalk" }, ask);
-    expect(ask.prompts[0]).toBe("What should each event do? [run,listen,forward,agent,notify,routine]");
+    expect(ask.prompts[0]).toBe("What should each event do? [run,listen]");
     expect(reqs.at(-1)!.body).toEqual({ name: "support", preset: "channeltalk", route: { kind: "run" } });
     const runs = loadRuns(ctx)!;
     expect(runs).toMatchObject({ v: 1, userId: "user1", server: `http://localhost:${server.port}` });
@@ -221,57 +211,30 @@ describe("0b webhook", () => {
     expect(loadRuns(ctx)!.runs.elsewhere).toBeUndefined();
   });
 
-  test("add --route forward: the URL, and the forward secret shown once", async () => {
-    await webhookCommand(ctx, ["add", "orders"], { route: "forward", url: "https://hooks.example.com/in" }, io());
-    expect(reqs.at(-1)!.body).toEqual({ name: "orders", preset: "generic", route: { kind: "forward", url: "https://hooks.example.com/in" } });
-    expect(out.join("\n")).toContain("orders: forwards to hooks.example.com");
-    expect(out.join("\n")).toContain("Forward secret: whsec_Zm9yd2FyZA==");
-    await expect(webhookCommand(ctx, ["add", "x"], { route: "forward" }, io())).rejects.toThrow("--url");
-    await expect(webhookCommand(ctx, ["add", "x"], { route: "pipe" }, io())).rejects.toThrow("--route is run, listen, forward, agent, notify, routine");
+  test("the removed routes are refused before anything is sent, pointing at run", async () => {
+    for (const route of ["forward", "agent", "notify", "routine"])
+      await expect(webhookCommand(ctx, ["add", "x"], { route }, io())).rejects.toThrow(`the ${route} route was removed: run a command for each event instead`);
+    await expect(webhookCommand(ctx, ["add", "x"], { route: "pipe" }, io())).rejects.toThrow("--route is run or listen");
+    expect(reqs.filter((r) => r.method === "POST")).toHaveLength(0);
+    // --notify still works on either route.
+    await webhookCommand(ctx, ["add", "support"], { preset: "channeltalk", route: "listen", notify: true }, io());
+    expect(reqs.at(-1)!.body).toEqual({ name: "support", preset: "channeltalk", notify: true });
+    expect(out.join("\n")).toContain("support: kept for a session to listen for, and notifies you");
   });
 
-  test("add --route agent: plan by default; edit refused for anything but plan|edit; step-up points at the dashboard", async () => {
-    await webhookCommand(ctx, ["add", "support"], { preset: "channeltalk", route: "agent", repo: "acme/web", agent: "claude", notify: true }, io());
-    expect(reqs.at(-1)!.body).toEqual({ name: "support", preset: "channeltalk", route: { kind: "agent", repo: "acme/web", mode: "plan", agent: "claude" }, notify: true });
-    expect(out.join("\n")).toContain("agents start in plan mode");
-    await expect(webhookCommand(ctx, ["add", "x"], { route: "agent", repo: "r", mode: "auto" }, io())).rejects.toThrow("never start agents in auto mode");
-    await expect(webhookCommand(ctx, ["add", "x"], { route: "agent" }, io())).rejects.toThrow("--repo");
-    createStatus = 403;
-    await expect(webhookCommand(ctx, ["add", "x"], { route: "agent", repo: "r", mode: "edit" }, io())).rejects.toThrow("/app/triggers");
-  });
-
-  test("add --route routine: the bearer comes from the prompt or stdin, never a flag", async () => {
-    const asked = io("sk-ant-oat01-secret");
-    const tpl = join(ctx.home, "tpl.txt");
-    writeFileSync(tpl, "CI failed: {{type}}");
-    await webhookCommand(ctx, ["add", "ci"], { route: "routine", routineUrl: "https://api.anthropic.com/v1/claude_code/routines/trig_1/fire", template: tpl }, asked);
-    expect(asked.asked).toBe(1);
-    expect(reqs.at(-1)!.body).toEqual({
-      name: "ci",
-      preset: "generic",
-      route: { kind: "routine", url: "https://api.anthropic.com/v1/claude_code/routines/trig_1/fire", template: "CI failed: {{type}}" },
-      routineToken: "sk-ant-oat01-secret",
-    });
-    expect(out.join("\n")).toContain("Secret:  whsec_c2VjcmV0");
-    expect(out.join("\n")).not.toContain("sk-ant-oat01");
-    // A token passed as an option is ignored: only the prompt or stdin supply it.
-    const none = io(null);
-    await expect(webhookCommand(ctx, ["add", "ci2"], { route: "routine", routineUrl: "https://x.example/fire", routineToken: "flag-token" } as never, none)).rejects.toThrow("never a flag");
-    expect(reqs.some((r) => JSON.stringify(r.body ?? "").includes("flag-token"))).toBe(false);
-    await expect(webhookCommand(ctx, ["add", "ci3"], { route: "routine" }, io("x"))).rejects.toThrow("--routine-url");
-  });
-
-  test("the CLI has no flag for the bearer at all", () => {
-    const r = Bun.spawnSync(["bun", join(import.meta.dir, "../src/index.ts"), "webhook", "add", "ci", "--route", "routine", "--routine-token", "abc"], {
-      env: { ...process.env, ZEROBRIDGE_USER_HOME: ctx.home, ZEROBRIDGE_DIR: ctx.storeDir, ZEROBRIDGE_SECRET_STORE: "file" },
-      stdin: "ignore",
-    });
-    expect(r.exitCode).not.toBe(0);
-    expect(r.stderr.toString() + r.stdout.toString()).toContain("routine-token");
+  test("the CLI has no flags for the removed routes' settings", () => {
+    for (const flag of ["--routine-url", "--template"]) {
+      const r = Bun.spawnSync(["bun", join(import.meta.dir, "../src/index.ts"), "webhook", "add", "ci", flag, "x"], {
+        env: { ...process.env, ZEROBRIDGE_USER_HOME: ctx.home, ZEROBRIDGE_DIR: ctx.storeDir, ZEROBRIDGE_SECRET_STORE: "file" },
+        stdin: "ignore",
+      });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stderr.toString() + r.stdout.toString()).toContain(flag.slice(2));
+    }
     expect(reqs).toHaveLength(0);
   });
 
-  test("run: the command as given after --, kept here; the route switched to run (Store without asking); --off forgets it", async () => {
+  test("run: the command as given after --, kept here; the route switched to run (from listen without asking); --off forgets it", async () => {
     endpoints = [endpoint("support")];
     await webhookCommand(ctx, ["run", "support"], { command: ["python3", "sync.py", "; rm -rf ~", "$HOME"], timeout: "60", debounce: "30" }, io());
     expect(loadRuns(ctx)!.runs.support).toMatchObject({ argv: ["python3", "sync.py", "; rm -rf ~", "$HOME"], cwd: process.cwd(), timeoutSec: 60, debounceSec: 30 });
@@ -301,14 +264,8 @@ describe("0b webhook", () => {
     expect(out.join("\n")).toContain("no longer runs a command on this machine");
   });
 
-  test("run on a webhook that does something else asks first (--yes doesn't); --machine pins it; on a terminal it offers a test and waits for the result", async () => {
-    endpoints = [endpoint("support", { route: { kind: "agent", repo: "acme/web", mode: "plan", template: "x", cooldownSec: 300 } })];
-    const no = io(null, { confirms: [false] });
-    await webhookCommand(ctx, ["run", "support"], { command: ["true"] }, no);
-    expect(no.prompts[0]).toContain("starts an agent in acme/web");
-    expect(reqs.filter((r) => r.method === "PATCH")).toHaveLength(0);
-    expect(out.join("\n")).toContain("still starts an agent");
-
+  test("run: --machine pins it; on a terminal it offers a test and waits for the result", async () => {
+    endpoints = [endpoint("support")];
     await webhookCommand(ctx, ["run", "support"], { command: ["true"], machine: "mbp", yes: true }, io());
     expect(reqs.find((r) => r.method === "PATCH")!.body).toEqual({ route: { kind: "run", machine: "mbp" } });
 
@@ -325,21 +282,17 @@ describe("0b webhook", () => {
     expect(out.join("\n")).toContain("✓ route run: exit 0 on mbp, 2.1 s");
   });
 
-  test("set: a new route (forward shows its secret once); forward-secret makes a new one; store is sent as store", async () => {
-    endpoints = [endpoint("orders")];
-    await webhookCommand(ctx, ["set", "orders"], { route: "forward", url: "https://hooks.example.com/in" }, io());
-    expect(reqs.at(-1)!.body).toEqual({ route: { kind: "forward", url: "https://hooks.example.com/in" } });
-    expect(out.join("\n")).toContain("Forward secret: whsec_bmV3");
-    out = [];
-    await webhookCommand(ctx, ["forward-secret", "orders"], {}, io());
-    expect(reqs.at(-1)!.path).toBe(`/api/triggers/${endpoints[0]!.id}/forward-secret`);
-    expect(out.join("\n")).toContain("Forward secret: whsec_cm90YXRlZA==");
-    await webhookCommand(ctx, ["set", "orders"], { route: "store" }, io());
+  test("set: listen is sent as store (older gateways know it), run says how to set the command; a removed route is refused", async () => {
+    endpoints = [endpoint("orders", { route: { kind: "run" } })];
+    await webhookCommand(ctx, ["set", "orders"], { route: "listen" }, io());
     expect(reqs.at(-1)!.body).toEqual({ route: { kind: "store" } });
+    expect(out.join("\n")).toContain("orders: kept for a session to listen for");
     out = [];
     await webhookCommand(ctx, ["set", "orders"], { route: "run" }, io());
     expect(out.join("\n")).toContain("0b webhook run orders -- <command>");
+    await expect(webhookCommand(ctx, ["set", "orders"], { route: "forward" }, io())).rejects.toThrow("the forward route was removed");
     await expect(webhookCommand(ctx, ["set", "orders"], {}, io())).rejects.toThrow("--route");
+    await expect(webhookCommand(ctx, ["forward-secret", "orders"], {}, io())).rejects.toThrow('unknown subcommand "forward-secret"');
   });
 
   test("list: what runs here and which machines have a command", async () => {
@@ -358,10 +311,10 @@ describe("0b webhook", () => {
   });
 
   test("list, rotate, test, events, rm", async () => {
-    endpoints = [endpoint("support", { route: { kind: "agent", repo: "acme/web", mode: "plan", template: "x", cooldownSec: 300 }, lastError: "2026-10-01T12:00Z agent control is off" })];
+    endpoints = [endpoint("support", { lastError: "its agent route was removed: events are kept for listening; run a command to act on them (0b webhook run)" })];
     await webhookCommand(ctx, ["list"], {}, io());
-    expect(out.join("\n")).toContain("support  Channel Talk  starts an agent in acme/web (plan, 5 min cooldown)");
-    expect(out.join("\n")).toContain("agent control is off");
+    expect(out.join("\n")).toContain("support  Channel Talk  kept for a session to listen for");
+    expect(out.join("\n")).toContain("its agent route was removed");
     out = [];
     await webhookCommand(ctx, [], { json: true }, io());
     expect(JSON.parse(out.join("\n"))).toHaveLength(1);
@@ -373,7 +326,7 @@ describe("0b webhook", () => {
 
     out = [];
     await webhookCommand(ctx, ["test", "support"], {}, io());
-    expect(out.join("\n")).toContain("route agent: started on devbox (claude, plan) · task t_00000001");
+    expect(out.join("\n")).toContain("route listen: stored");
 
     out = [];
     await expect(webhookCommand(ctx, ["events", "support"], { follow: true }, io())).rejects.toThrow("stop following");

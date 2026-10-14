@@ -1,7 +1,6 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { CloudError, type CloudClient, type Context } from "@0bridge/core";
-import { ensureBackground } from "./background.ts";
 import { cloudClient } from "./cloud.ts";
 import {
   cleanFolder,
@@ -198,11 +197,10 @@ async function clone(ctx: Context, args: string[], opts: DriveOptions) {
     fail(e instanceof Error ? e.message : String(e));
   }
   const st = loadDriveState(ctx).folders[dir];
-  console.log(`${c.green("✓")} ${c.bold(st ? folderLabel(st) : args[0] || "Drive")} is in ${tilde(ctx, dir)} ${c.dim(`(${plural(Object.keys(st?.files ?? {}).length, "file")})`)}. It syncs both ways in the background ${c.dim("(0b drive status; 0b drive sync now)")}.`);
+  console.log(`${c.green("✓")} ${c.bold(st ? folderLabel(st) : args[0] || "Drive")} is in ${tilde(ctx, dir)} ${c.dim(`(${plural(Object.keys(st?.files ?? {}).length, "file")})`)}. It syncs both ways when you run ${c.cyan("0b drive sync")} there: right before you (or an agent) read or edit it, and right after writing ${c.dim("(nothing syncs on a timer; 0b drive status shows what differs)")}.`);
   const links = st?.links ?? [];
   if (links.length)
     console.log(c.dim(`Claude Code reads its ${[links.some((l) => l.endsWith("CLAUDE.md")) ? "AGENTS.md (as CLAUDE.md)" : "", links.some((l) => l.includes(".claude/skills/")) ? "skills (in .claude/skills)" : ""].filter(Boolean).join(" and ")} there too.`));
-  ensureBackground(ctx);
 }
 
 async function sync(ctx: Context, dirArg: string | undefined, opts: DriveOptions) {

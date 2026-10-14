@@ -1,6 +1,6 @@
 import { trelloHostCommand, loadTrelloRelay, saveTrelloRelay } from "./trello-host.ts";
 import { readFileSync } from "node:fs";
-import { CloudError, type CloudClient, type Context } from "@0bridge/core";
+import type { CloudClient, Context } from "@0bridge/core";
 import { cloudClient } from "./cloud.ts";
 import { installService, serviceInstalled } from "./service.ts";
 import { c, p, tilde } from "./ui.ts";
@@ -8,34 +8,24 @@ import { RUN_DEFAULTS, RUN_MAX, currentRuns, loadRuns, logPath, machineName, run
 import { listenOnce } from "./webhook-listen.ts";
 
 /**
- * `0b webhook` (round 2, D54; drive-plus §4.9): addresses other services send events to (Channel
- * Talk, GitHub, any Standard Webhooks sender), what each one does with them, and the events
- * received. Two ways first (T-088): run a command on one of your machines for each event (run: the
+ * `0b webhook` (round 2, D54; drive-plus §4.9; two routes since D84): addresses other services
+ * send events to (Channel Talk, GitHub, any Standard Webhooks sender), what each one does with
+ * them, and the events received. Run a command on one of your machines for each event (run: the
  * command stays on that machine, in ~/.0bridge/webhooks.json, and never goes to the server), or
  * nothing runs and a session listens (`0b webhook listen <name>` ends with the next event; the
- * route is stored as "queue", the default). An event can also be forwarded to a URL (signed),
- * start a coding agent, notify you, or start a Routine.
- * A routine's bearer token is typed hidden in the terminal or piped in, never given as a flag
- * (flags end up in shell history and agents' transcripts). Event data is outside input; this only
- * shows it.
+ * route is stored as "queue", the default). Forwarding, agents, notifications and Routines are a
+ * command's job now. Event data is outside input; this only shows it.
  */
 
 export interface WebhookOptions {
   preset?: string;
   board?: string;
   route?: string;
-  repo?: string;
-  agent?: string;
   machine?: string;
-  mode?: string;
-  template?: string;
-  routineUrl?: string;
   notify?: boolean;
   follow?: boolean;
   json?: boolean;
   yes?: boolean;
-  /** --route forward: where events go. */
-  url?: string;
   /** `run`: seconds to wait for more events before running once (--debounce), and a run's limit (--timeout). */
   debounce?: string;
   timeout?: string;
@@ -45,14 +35,8 @@ export interface WebhookOptions {
   command?: string[];
 }
 
-/** Mirrors apps/gateway/src/triggers.ts. "queue" is shown as Store. */
-type Route =
-  | { kind: "queue" }
-  | { kind: "run"; machine?: string }
-  | { kind: "forward"; url: string }
-  | { kind: "agent"; repo: string; agent?: string; machine?: string; mode: "plan" | "edit"; template: string; cooldownSec: number }
-  | { kind: "routine"; url: string; template: string }
-  | { kind: "notify"; template: string };
+/** Mirrors apps/gateway/src/triggers.ts. "queue" is shown as Listen. */
+type Route = { kind: "queue" } | { kind: "run"; machine?: string };
 
 export interface Endpoint {
   id: string;
@@ -87,11 +71,10 @@ export interface StoredEvent {
   route: { kind: string; ok: boolean | null; detail?: string; task?: string; machine?: string; exit?: number | null; ms?: number };
 }
 
-/** How the command asks things: hidden from the terminal, else piped in. Swapped in tests. */
+/** How the command asks things on a terminal. Swapped in tests. */
 export interface WebhookIo {
   /** A person at a terminal (asking makes sense). */
   interactive: boolean;
-  bearer(): Promise<string | null>;
   confirm(message: string): Promise<boolean>;
   /** One of `options` (values), or null when cancelled. */
   select(message: string, options: { value: string; label: string; hint?: string }[]): Promise<string | null>;
@@ -113,12 +96,6 @@ const TTY_IO: WebhookIo = {
   get interactive() {
     return Boolean(process.stdin.isTTY && process.stdout.isTTY);
   },
-  async bearer() {
-    if (!process.stdin.isTTY) return readStdin().trim() || null;
-    const v = await p.password({ message: "The routine's bearer token (from its API trigger on claude.ai/code/routines)", mask: "•", validate: (x) => (x?.trim() ? undefined : "required") });
-    if (p.isCancel(v)) process.exit(0);
-    return String(v).trim();
-  },
   async confirm(message) {
     if (!process.stdin.isTTY) return true;
     const v = await p.confirm({ message });
@@ -137,16 +114,14 @@ const TTY_IO: WebhookIo = {
 
 const PRESETS = ["channeltalk", "github", "generic", "trello"] as const;
 /** What --route takes; "store" and "queue" still work (older scripts) and mean listen. */
-const ROUTES = ["run", "listen", "forward", "agent", "notify", "routine"] as const;
+const ROUTES = ["run", "listen"] as const;
+/** Routes removed in D84: refused with what to do instead. */
+const REMOVED = ["forward", "agent", "notify", "routine"];
 const TITLE: Record<Endpoint["preset"], string> = { channeltalk: "Channel Talk", github: "GitHub", trello: "Trello", generic: "Generic (Standard Webhooks)" };
 /** The action prompt of `0b webhook add`, in the order people pick them. */
 const ACTIONS: { value: (typeof ROUTES)[number]; label: string; hint: string }[] = [
   { value: "run", label: "Run a command on this machine", hint: "a script you have here; the event's JSON on its input" },
   { value: "listen", label: "A session listens for it", hint: "nothing runs; 0b webhook listen <name> in a session ends with the next event" },
-  { value: "forward", label: "Forward to a URL", hint: "a signed POST to your own server" },
-  { value: "agent", label: "Start a coding agent", hint: "Claude Code, Codex or Gemini in a repo, plan mode" },
-  { value: "notify", label: "Notify me", hint: "ntfy or email" },
-  { value: "routine", label: "Start a Claude Code Routine", hint: "its fire URL and bearer token" },
 ];
 
 const ago = (ms: number) => {
@@ -154,30 +129,11 @@ const ago = (ms: number) => {
   return s < 90 ? `${s}s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 129_600 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86_400)} days ago`;
 };
 
-const hostOf = (url: string) => {
-  try {
-    return new URL(url).host;
-  } catch {
-    return url;
-  }
-};
-
 /** What an endpoint does with an event, in a few words. */
 export function routeText(e: Pick<Endpoint, "route" | "notify" | "types">): string {
   const r = e.route;
-  const what =
-    r.kind === "agent"
-      ? `starts ${r.agent ?? "an agent"} in ${r.repo} (${r.mode}${r.machine ? `, on ${r.machine}` : ""}, ${Math.round(r.cooldownSec / 60)} min cooldown)`
-      : r.kind === "routine"
-        ? `starts a Claude Code Routine`
-        : r.kind === "notify"
-          ? "notifies you"
-          : r.kind === "run"
-            ? `runs a command on ${r.machine ?? "your machine"}`
-            : r.kind === "forward"
-              ? `forwards to ${hostOf(r.url)}`
-              : "kept for a session to listen for";
-  return `${what}${e.notify && r.kind !== "notify" ? ", and notifies you" : ""}${e.types ? ` (only ${e.types.join(", ")})` : ""}`;
+  const what = r.kind === "run" ? `runs a command on ${r.machine ?? "your machine"}` : "kept for a session to listen for";
+  return `${what}${e.notify ? ", and notifies you" : ""}${e.types ? ` (only ${e.types.join(", ")})` : ""}`;
 }
 
 /** A command as one would type it: words with spaces or quotes quoted. */
@@ -272,31 +228,14 @@ async function pickRoute(opts: WebhookOptions, io: WebhookIo): Promise<string> {
   return v;
 }
 
-/** Turn the flags (and, on a terminal, answers) into a request's route. */
-async function routeFrom(kind: string, opts: WebhookOptions, io: WebhookIo): Promise<{ route?: Record<string, unknown>; routineToken?: string }> {
+/** The request's route for --route (or the answer on a terminal). */
+function routeFrom(kind: string, opts: WebhookOptions): Record<string, unknown> {
   if (kind === "queue" || kind === "store") kind = "listen";
-  if (!(ROUTES as readonly string[]).includes(kind)) throw new Error(`--route is ${ROUTES.join(", ")}`);
-  const template = opts.template ? readFileSync(opts.template, "utf8") : undefined;
+  if (REMOVED.includes(kind)) throw new Error(`the ${kind} route was removed: run a command for each event instead (0b webhook run <name> -- <command>), which can forward, notify or start what you like`);
+  if (!(ROUTES as readonly string[]).includes(kind)) throw new Error(`--route is ${ROUTES.join(" or ")}`);
   // "store" on the wire: gateways from before listen don't know the name.
-  if (kind === "listen") return { route: { kind: "store" } };
-  if (kind === "notify") return { route: { kind, ...(template ? { template } : {}) } };
-  if (kind === "run") return { route: { kind, ...(opts.machine ? { machine: opts.machine } : {}) } };
-  if (kind === "forward") {
-    const url = opts.url ?? (io.interactive ? await io.text("The URL to forward events to (https)", "https://…") : null);
-    if (!url) throw new Error("--route forward needs --url <https address> (events are POSTed there, signed with the webhook's forward secret)");
-    return { route: { kind, url } };
-  }
-  if (kind === "routine") {
-    if (!opts.routineUrl) throw new Error("--route routine needs --routine-url <the routine's fire URL> (its bearer token is asked for, or piped in)");
-    const token = await io.bearer();
-    if (!token) throw new Error("the routine's bearer token is needed: type it when asked, or pipe it in (`… | 0b webhook add …`); it's never a flag");
-    return { route: { kind, url: opts.routineUrl, ...(template ? { template } : {}) }, routineToken: token };
-  }
-  const repo = opts.repo ?? (io.interactive && !opts.route ? await io.text("Which repo (its name, like acme/web, or its path; allowed with `0b agent allow`)") : null);
-  if (!repo) throw new Error("--route agent needs --repo <name or path> (a repo you allowed with `0b agent allow`)");
-  const mode = opts.mode ?? "plan";
-  if (mode !== "plan" && mode !== "edit") throw new Error("--mode is plan or edit (webhooks never start agents in auto mode)");
-  return { route: { kind, repo, mode, ...(opts.agent ? { agent: opts.agent } : {}), ...(opts.machine ? { machine: opts.machine } : {}), ...(template ? { template } : {}) } };
+  if (kind === "listen") return { kind: "store" };
+  return { kind, ...(opts.machine ? { machine: opts.machine } : {}) };
 }
 
 /** --timeout and --debounce: whole seconds in range, else the default. */
@@ -305,12 +244,6 @@ function seconds(raw: string | undefined, flag: string, min: number, max: number
   const n = Number(raw);
   if (!Number.isInteger(n) || n < min || n > max) throw new Error(`${flag} is ${min} to ${max} seconds`);
   return n;
-}
-
-/** Print the forward secret once, with how a receiver checks it. */
-function showForwardSecret(secret: string) {
-  console.log(`  Forward secret: ${secret}`);
-  console.log(c.dim("  Shown only now. Each POST carries webhook-id, webhook-timestamp and webhook-signature (Standard Webhooks); check them with this secret."));
 }
 
 /** Save this machine's command for `name` and make sure the runner service is on. */
@@ -400,7 +333,7 @@ export async function webhookCommand(ctx: Context, args: string[], opts: Webhook
     }
 
     case "add": {
-      if (!name) throw new Error("usage: 0b webhook add <name> [--preset channeltalk|github|generic] [--route run|listen|forward|agent|notify|routine] …");
+      if (!name) throw new Error("usage: 0b webhook add <name> [--preset channeltalk|github|generic] [--route run|listen] [--notify]");
       const preset = opts.preset ?? "generic";
       if (!(PRESETS as readonly string[]).includes(preset)) throw new Error(`--preset is ${PRESETS.join(", ")}`);
       const kind = await pickRoute(opts, io);
@@ -411,16 +344,9 @@ export async function webhookCommand(ctx: Context, args: string[], opts: Webhook
         if (line === null) process.exit(0);
         argv = splitCommand(line);
       }
-      const { route, routineToken } = await routeFrom(kind, opts, io);
-      let r: { endpoint: Endpoint; secret: string; url: string; forwardSecret?: string };
-      try {
-        if (preset === "trello" && !/^[a-f0-9]{24}$/.test(opts.board ?? "")) throw new Error("--preset trello needs --board <raw board id>");
-        r = await client.call("POST", "/triggers", { name, preset, ...(preset === "trello" ? { verify: { mode: "trello", board: opts.board } } : {}), ...(route && route.kind !== "store" ? { route } : {}), ...(routineToken ? { routineToken } : {}), ...(opts.notify ? { notify: true } : {}) });
-      } catch (e) {
-        if (e instanceof CloudError && e.code === "STEP_UP_REQUIRED")
-          throw new Error(`letting a webhook start agents in edit mode is set on the dashboard (with your passkey): add it here in plan mode, then switch it at ${server}/app/triggers`);
-        throw e;
-      }
+      const route = routeFrom(kind, opts);
+      if (preset === "trello" && !/^[a-f0-9]{24}$/.test(opts.board ?? "")) throw new Error("--preset trello needs --board <raw board id>");
+      const r = await client.call<{ endpoint: Endpoint; secret: string; url: string }>("POST", "/triggers", { name, preset, ...(preset === "trello" ? { verify: { mode: "trello", board: opts.board } } : {}), ...(route.kind !== "store" ? { route } : {}), ...(opts.notify ? { notify: true } : {}) });
       if (opts.json) {
         if (preset === "trello") { const { secret, ...safe } = r; return console.log(JSON.stringify(safe, null, 2)); }
         return console.log(JSON.stringify(r, null, 2));
@@ -430,9 +356,6 @@ export async function webhookCommand(ctx: Context, args: string[], opts: Webhook
       if (preset !== "trello" && r.endpoint.verify.mode !== "query") console.log(`  Secret:  ${r.secret}`);
       if (preset !== "trello") console.log(c.dim(`  ${r.endpoint.verify.mode === "query" ? "The URL holds the secret" : "The secret is shown"} only now; \`0b webhook rotate ${r.endpoint.name}\` makes a new one.`));
       for (const s of setupSteps(r.endpoint.preset, r.url, r.endpoint.name)) console.log(`  · ${s}`);
-      if (r.forwardSecret) showForwardSecret(r.forwardSecret);
-      if (r.endpoint.route.kind === "agent")
-        console.log(c.dim(`  Webhook data is outside input: agents start in ${r.endpoint.route.mode} mode, at most once per ${Math.round(r.endpoint.route.cooldownSec / 60)} min and 20 times a day.`));
       if (r.endpoint.route.kind === "run") {
         if (argv?.length) {
           const run = saveCommand(ctx, server, cfg.userId, r.endpoint.name, argv, opts);
@@ -470,11 +393,8 @@ export async function webhookCommand(ctx: Context, args: string[], opts: Webhook
       const run = saveCommand(ctx, server, cfg.userId, e.name, argv, e.preset === "trello" ? { ...opts, debounce: "0" } : opts);
       let routed = e.route.kind === "run" && (!opts.machine || e.route.machine === opts.machine);
       if (!routed) {
-        const replacing = e.route.kind !== "queue" && e.route.kind !== "run";
-        if (!replacing || opts.yes || (await io.confirm(`${e.name} ${routeText(e)} now. Run this command for its events instead?`))) {
-          await client.call("PATCH", `/triggers/${encodeURIComponent(e.id)}`, { route: { kind: "run", ...(opts.machine ? { machine: opts.machine } : {}) } });
-          routed = true;
-        }
+        await client.call("PATCH", `/triggers/${encodeURIComponent(e.id)}`, { route: { kind: "run", ...(opts.machine ? { machine: opts.machine } : {}) } });
+        routed = true;
       }
       const where = ensureListener(ctx);
       console.log(`${c.green("✓")} ${e.name} runs ${c.bold(shellLine(run.argv))} on this machine for each event ${c.dim(`(in ${tilde(ctx, run.cwd)})`)}`);
@@ -507,31 +427,15 @@ export async function webhookCommand(ctx: Context, args: string[], opts: Webhook
     }
 
     case "set": {
-      const e = await find(client, name, "0b webhook set <name> --route run|listen|forward|agent|notify|routine …");
-      if (!opts.route && opts.notify === undefined) throw new Error("say what to change: --route run|listen|forward|agent|notify|routine (with its options), or --notify");
+      const e = await find(client, name, "0b webhook set <name> --route run|listen | --notify");
+      if (!opts.route && opts.notify === undefined) throw new Error("say what to change: --route run|listen, or --notify");
       const body: Record<string, unknown> = {};
-      if (opts.route) Object.assign(body, await routeFrom(opts.route, opts, io));
+      if (opts.route) body.route = routeFrom(opts.route, opts);
       if (opts.notify !== undefined) body.notify = opts.notify;
-      let updated: Endpoint & { forwardSecret?: string };
-      try {
-        updated = await client.call("PATCH", `/triggers/${encodeURIComponent(e.id)}`, body);
-      } catch (err) {
-        if (err instanceof CloudError && err.code === "STEP_UP_REQUIRED") throw new Error(`edit mode is set on the dashboard (with your passkey): ${server}/app/triggers/${e.id}`);
-        throw err;
-      }
+      const updated = await client.call<Endpoint>("PATCH", `/triggers/${encodeURIComponent(e.id)}`, body);
       if (opts.json) return console.log(JSON.stringify(updated, null, 2));
       console.log(`${c.green("✓")} ${updated.name}: ${routeText(updated)}`);
-      if (updated.forwardSecret) showForwardSecret(updated.forwardSecret);
       if (updated.route.kind === "run" && !currentRuns(ctx)[updated.name] && !updated.runners?.length) console.log(`  Now, on the machine that runs it: ${c.cyan(`0b webhook run ${updated.name} -- <command>`)}`);
-      return;
-    }
-
-    case "forward-secret": {
-      const e = await find(client, name, "0b webhook forward-secret <name>");
-      const r = await client.call<{ secret: string }>("POST", `/triggers/${encodeURIComponent(e.id)}/forward-secret`, {});
-      if (opts.json) return console.log(JSON.stringify(r, null, 2));
-      console.log(`${c.green("✓")} ${e.name} signs forwards with a new secret; the old one stopped working.`);
-      showForwardSecret(r.secret);
       return;
     }
 
@@ -650,6 +554,6 @@ export async function webhookCommand(ctx: Context, args: string[], opts: Webhook
     }
 
     default:
-      throw new Error(`unknown subcommand "${sub}". 0b webhook add | run | listen | set | token | forward-secret | list | rm | test | rotate | events`);
+      throw new Error(`unknown subcommand "${sub}". 0b webhook add | run | listen | set | token | list | rm | test | rotate | events`);
   }
 }

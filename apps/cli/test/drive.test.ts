@@ -145,7 +145,8 @@ describe("0b drive", () => {
     expect(r.code).toBe(0);
     const dir = join(home, "tax-invoices");
     expect(r.out).toContain(`Personal › tax-invoices is in ${H}tax-invoices (5 files)`);
-    expect(r.out).toContain("syncs both ways in the background");
+    expect(r.out).toContain("syncs both ways when you run 0b drive sync there");
+    expect(r.out).toContain("nothing syncs on a timer");
     if (canSymlink()) {
       expect(r.out).toContain("Claude Code reads its AGENTS.md (as CLAUDE.md) and skills (in .claude/skills) there too.");
       expect(readlinkSync(join(dir, "CLAUDE.md"))).toBe("AGENTS.md");
@@ -248,5 +249,13 @@ describe("0b drive", () => {
     r = await ob(["drive", "ls"]);
     expect(r.code).toBe(1);
     expect(r.out).toContain("Not signed in");
+  });
+});
+
+describe("no timer syncs Drive folders", () => {
+  test("the background job syncs history, context and personal files, never a Drive folder: whoever works in one syncs it", () => {
+    const src = readFileSync(join(import.meta.dir, "../src/background.ts"), "utf8");
+    expect(src).not.toContain("syncAllDriveFolders");
+    expect(src).not.toContain("drive-sync");
   });
 });

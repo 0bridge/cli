@@ -8,8 +8,8 @@ import { c, tilde } from "./ui.ts";
 
 /**
  * Drive folders synced to local folders (docs/plans/drive-plus.md A5, §4.10): `0b drive clone`
- * links a local folder to a Drive folder (personal or a team's), and each sync (by hand or in
- * `0b background`) pulls the changes cursor and pushes local edits with the recorded base version,
+ * links a local folder to a Drive folder (personal or a team's), and each sync (`0b drive sync`,
+ * run by whoever works in the folder; no timer since D85) pulls the changes cursor and pushes local edits with the recorded base version,
  * keeping both sides of a conflict. State in ~/.0bridge/drive.json, locks under ~/.0bridge/drive/.
  * Ported from the spaces branch's space-sync.ts onto /api/drive (§4.7); the Drive folder's prefix is
  * stripped here, so `tax-invoices/AGENTS.md` in Drive is `AGENTS.md` in the folder cloned from it.
@@ -284,7 +284,7 @@ export interface DriveState {
 
 const statePath = (ctx: Context) => join(ctx.storeDir, "drive.json");
 const stateLockPath = (ctx: Context) => join(ctx.storeDir, "drive.json.lock");
-/** Held while a folder syncs; another sync of it (the background job, a manual one) skips it. */
+/** Held while a folder syncs; another sync of it at the same time skips it. */
 export const folderLockPath = (ctx: Context, dir: string) => join(ctx.storeDir, "drive", `${createHash("sha256").update(dir).digest("hex").slice(0, 16)}.lock`);
 
 export const loadDriveState = (ctx: Context): DriveState => readJson<DriveState>(statePath(ctx)) ?? { folders: {} };
@@ -976,7 +976,7 @@ export function printReport(ctx: Context, r: SyncReport, o: { quiet?: boolean; h
   if (!o.quiet && !r.pulled.length && !r.pushed.length && !r.removed.length && !r.deleted.length && !noisy) console.log(c.dim("Up to date."));
 }
 
-/** `0b background`: every synced folder, one at a time; a folder whose lock is held is skipped. */
+/** `0b drive sync` outside any synced folder: every synced folder, one at a time; a folder whose lock is held is skipped. */
 export async function syncAllDriveFolders(ctx: Context, quiet: boolean): Promise<void> {
   const folders = Object.entries(loadDriveState(ctx).folders);
   for (const [dir, st] of folders) {

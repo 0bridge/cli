@@ -31,7 +31,7 @@ bun test
 bun run build        # apps/cli/dist/0b.js, the file npm ships
 ```
 
-Each release is this repository's tagged commit (`v<version>`): it is built, scanned for secrets and tested on the maintainer's machine, then published to npm by hand with two-factor authentication. Versions up to 0.2.37 were published by GitHub Actions with [npm provenance](https://docs.npmjs.com/generating-provenance-statements); later versions have no provenance statement, so compare a version against its tag here.
+Each release is this repository's tagged commit (`v<version>`): it is built, scanned for secrets and tested on the maintainer's machine, and pushing its tag runs [`publish.yml`](.github/workflows/publish.yml), which scans and tests it again and publishes it to npm through trusted publishing, with [npm provenance](https://docs.npmjs.com/generating-provenance-statements) that links the package to that commit. Versions 0.2.38 to 0.2.40 were published by hand and have no provenance statement; compare those against their tags here.
 
 ## Issues and security
 

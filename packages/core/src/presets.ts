@@ -79,7 +79,7 @@ export const PRESETS: Record<string, string> = {
 
 /**
  * Connectors of kind "api": HTTP APIs 0bridge calls for the user (the gateway's apis.ts has their
- * tools). `0b connect google-calendar` signs in with Google; `0b connect channeltalk` asks for its keys.
+ * tools). `0b connect google-calendar` signs in with Google; `0b connect channeltalk` and `0b connect imap` ask for their keys.
  */
 export const API_CONNECTORS: Record<string, { title: string; auth: "oauth" | "key"; keys?: string[]; where?: string }> = {
   "google-calendar": { title: "Google Calendar", auth: "oauth" },
@@ -88,6 +88,13 @@ export const API_CONNECTORS: Record<string, { title: string; auth: "oauth" | "ke
   slack: { title: "Slack (0bridge's app)", auth: "oauth" },
   // Two keys, asked one by one; the gateway sends each in its own header.
   channeltalk: { title: "Channel Talk", auth: "key", keys: ["Access Key", "Access Secret"], where: "Channel Desk › Settings › API key management › Create new credential" },
+  // A mailbox over IMAP, read only: server, address and an app password (three lines on stdin).
+  imap: {
+    title: "Mail (IMAP)",
+    auth: "key",
+    keys: ["IMAP server (e.g. imap.gmail.com)", "Email address", "App password"],
+    where: "Gmail and Google Workspace: imap.gmail.com, with an app password from Google Account › Security › 2-Step Verification › App passwords",
+  },
 };
 
 /**

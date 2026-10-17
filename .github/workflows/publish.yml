@@ -1,0 +1,43 @@
+# Publishes apps/cli to npm when a v<x.y.z> tag is pushed, and nothing else runs here (D82). npm
+# trusted publishing (OIDC): no npm token is stored, no 2FA prompt, and the package gets provenance.
+# On npmjs.com → the 0bridge package → Settings → Trusted publishing: GitHub Actions, organization
+# 0bridge, repository cli, workflow publish.yml, environment npm. Standard runner only: a public
+# repository's standard GitHub-hosted runners are free; larger runners are billed even here.
+name: Publish
+on:
+  push:
+    tags: ["v*.*.*"]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag matches the package version
+        run: test "v$(node -p "require('./apps/cli/package.json').version")" = "$GITHUB_REF_NAME"
+      - name: No secrets in the tree
+        run: |
+          curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz | tar xz gitleaks
+          ./gitleaks dir . --config .gitleaks.toml --redact --no-banner
+      - uses: oven-sh/setup-bun@v2
+      # No registry-url: setup-node would write an .npmrc with a placeholder token, and publishing
+      # here authenticates with GitHub's OIDC token instead (npm 11.5.1 or newer).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: bun install --frozen-lockfile
+      - run: bun test
+      - run: npm publish --provenance --access public
+        working-directory: apps/cli
+      # The gateway's changelog may name this version: its Cloudflare Workers Build deploys once npm
+      # has it. The hook URL is the credential (an Actions secret); without it the gateway waits for
+      # its next build.
+      - name: Start the gateway's build
+        env:
+          HOOK: ${{ secrets.GATEWAY_DEPLOY_HOOK }}
+        if: env.HOOK != ''
+        run: curl -fsS -X POST "$HOOK" > /dev/null

@@ -6,13 +6,10 @@
  * summary, so setting up a repo on a new machine reads the same from any tool.
  */
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { GLOBAL_SCOPE, computeStatus, loadCloud, loadHistoryConfig, loadManifest, openSecretStore, parseDotenv, vaultKeyId, type Context } from "@0bridge/core";
+import { computeStatus, loadCloud, loadHistoryConfig, loadManifest, openSecretStore, repoOf, vaultKeyId, type Context } from "@0bridge/core";
 import { backgroundInstalled } from "./background.ts";
 import { cloudClient } from "./cloud.ts";
 import { skillsToAsk } from "./context.ts";
-import { HOME_REPO, filesHere, repoHere } from "./files.ts";
 import { connectionTree, loadLinks, projectOf, toolStates } from "./project.ts";
 import { render } from "./tree.ts";
 import { c } from "./ui.ts";
@@ -38,17 +35,12 @@ const line = (i: Item) => {
   return `  ${mark} ${i.label.padEnd(20)} ${i.detail ? c.dim(i.detail) : ""}${fix}`.trimEnd();
 };
 
-/** Env var names a repo says it needs: its .env.example (and .sample/.template) files, tracked in git. */
-function neededNames(root: string): { names: Set<string>; from: string[] } {
-  const r = spawnSync("git", ["ls-files", "--", "*.env*example*", "*.env*sample*", "*.env*template*"], { cwd: root, encoding: "utf8" });
-  const from = (r.stdout ?? "").split("\n").filter(Boolean).slice(0, 20);
-  const names = new Set<string>();
-  for (const f of from) {
-    try {
-      for (const k of Object.keys(parseDotenv(readFileSync(join(root, f), "utf8")))) names.add(k);
-    } catch {}
-  }
-  return { names, from };
+/** The repo this runs in (by its remote, so every clone is the same one); null outside a repo. */
+function repoHere(dir = process.cwd()): { repo: string; root: string } | null {
+  const inRepo = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], { cwd: dir, encoding: "utf8" }).stdout?.trim() === "true";
+  if (!inRepo) return null;
+  const r = repoOf(dir);
+  return { repo: r.remote ?? r.path, root: r.path };
 }
 
 export async function doctorCommand(ctx: Context): Promise<void> {
@@ -72,40 +64,26 @@ export async function doctorCommand(ctx: Context): Promise<void> {
   } else {
     machine.push({ ok: true, label: "Signed in", detail: `${cloud.login} · ${cloud.server.replace(/^https?:\/\//, "")}` });
     const { client } = cloudClient(ctx);
-    const [vault, conns, home, repoFiles, project] = await Promise.all([
+    const [vault, conns, project] = await Promise.all([
       client.vault().catch(() => null),
       client.connections().catch(() => null),
-      filesHere(client, HOME_REPO, ctx.home).catch(() => null),
-      here ? filesHere(client, here.repo, here.root).catch(() => null) : Promise.resolve(null),
       here ? projectOf(client, here.repo).catch(() => null) : Promise.resolve(null),
     ]);
 
-    // The vault, on this machine.
+    // The vault key, on this machine: end-to-end history is sealed with it. No vault is fine.
     const key = localKey(ctx);
-    if (!vault) machine.push({ ok: false, label: "Secrets vault", detail: "couldn't reach it" });
-    else if (!vault.keyId) machine.push({ ok: false, label: "Secrets vault", detail: "none yet (made with the first secret)", fix: "0b secret set <NAME>", who: "you" });
+    if (!vault) machine.push({ ok: false, label: "Vault key", detail: "couldn't reach 0bridge" });
+    else if (!vault.keyId) machine.push({ ok: true, label: "Vault key", detail: "none (only end-to-end history needs one)" });
     else if (!key || vaultKeyId(key) !== vault.keyId)
-      machine.push({ ok: false, label: "Secrets vault", detail: "this machine can't open it yet", fix: "0b vault unlock", who: "agent" });
-    else machine.push({ ok: true, label: "Secrets vault", detail: `opens here · ${vault.items.length} values` });
-
-    // Files in the home folder that follow the user (Claude Code's status line).
-    if (home) {
-      const n = home.missing.length + home.differ.length;
-      machine.push(
-        !home.total
-          ? { ok: true, label: "Home files", detail: "none synced (0b files statusline shares the status line)" }
-          : n
-            ? { ok: false, label: "Home files", detail: `${n} of ${home.total} not up to date here (${[...home.missing, ...home.differ].slice(0, 3).join(", ")})`, fix: "cd ~ && 0b files pull", who: "agent" }
-            : { ok: true, label: "Home files", detail: `${home.total} in sync` },
-      );
-    }
+      machine.push({ ok: false, label: "Vault key", detail: "this machine can't open your vault yet", fix: "0b vault unlock", who: "agent" });
+    else machine.push({ ok: true, label: "Vault key", detail: "opens here" });
 
     const history = loadHistoryConfig(ctx);
     machine.push(history.enabled ? { ok: true, label: "Conversations", detail: "synced from this machine" } : { ok: false, label: "Conversations", detail: "not synced from this machine", fix: "0b history on", who: "you" });
     // Skills a tool brought along that were never uploaded: the user decides, once.
     const asked = await skillsToAsk(ctx).catch(() => null);
     if (asked?.length) machine.push({ ok: false, label: "Skills", detail: `${asked.length} here not on 0bridge, waiting for your call: ${some(asked)}`, fix: "0b skill share <name> | 0b skill local <name>", who: "you" });
-    machine.push(backgroundInstalled(ctx) ? { ok: true, label: "Background sync", detail: "on" } : { ok: false, label: "Background sync", detail: "off: files and conversations sync only when 0b runs", fix: "0b background on", who: "agent" });
+    machine.push(backgroundInstalled(ctx) ? { ok: true, label: "Background sync", detail: "on" } : { ok: false, label: "Background sync", detail: "off: conversations and context sync only when 0b runs", fix: "0b background on", who: "agent" });
 
     // Connections that need the user.
     if (conns) {
@@ -141,42 +119,6 @@ export async function doctorCommand(ctx: Context): Promise<void> {
             ? { ok: true, label: "Project", detail: `linked${p.strict ? " (strict)" : ""} · agents here see:`, more: tree }
             : { ok: false, label: "Project", detail: `${tools.filter((t) => !t.on).map((t) => t.tool).join(", ") || "tools"} here use the global endpoint`, fix: "0b project link", who: "agent", more: tree },
         );
-      }
-      if (repoFiles) {
-        const n = repoFiles.missing.length + repoFiles.differ.length;
-        repoItems.push(
-          !repoFiles.total
-            ? { ok: true, label: "Personal files", detail: "none (0b files add AGENTS.local.md to share one)" }
-            : n
-              ? { ok: false, label: "Personal files", detail: `${n} of ${repoFiles.total} not up to date here`, fix: "0b files pull", who: "agent" }
-              : { ok: true, label: "Personal files", detail: `${repoFiles.total} in sync` },
-        );
-      }
-      if (vault?.keyId) {
-        const mine = vault.items.filter((i) => (i.scope === here.repo || i.scope === GLOBAL_SCOPE) && i.enabled !== false);
-        const inEnv = (env: string) => new Set(mine.filter((i) => i.env === env).map((i) => i.name));
-        const dev = inEnv("dev");
-        const prod = inEnv("prod");
-        const count = (env: string) => vault.items.filter((i) => i.scope === here.repo && i.env === env).length;
-        const { names, from } = neededNames(here.root);
-        const missing = [...names].filter((n) => !dev.has(n));
-        const prodOnly = missing.filter((n) => prod.has(n));
-        const detail = `this repo: ${count("dev")} for Development, ${count("prod")} for Production`;
-        if (!from.length) repoItems.push({ ok: true, label: "Secrets", detail: `${detail} (no .env.example to compare with)` });
-        else if (!missing.length) repoItems.push({ ok: true, label: "Secrets", detail: `${detail} · everything ${from[0]} lists is there` });
-        else
-          repoItems.push({
-            ok: false,
-            label: "Secrets",
-            detail: `${detail} · ${missing.length} of ${names.size} names in ${from.length === 1 ? from[0] : `${from.length} .env examples`} missing for Development`,
-            more: [
-              ...(prodOnly.length ? [`only in Production: ${some(prodOnly)} → on the dashboard (Secrets), check them and add Development ${c.dim("[you]")}`] : []),
-              ...(missing.length > prodOnly.length
-                ? [`not in the vault: ${some(missing.filter((n) => !prod.has(n)))} → ${c.cyan("0b secret set <NAME>")} ${c.dim("[you]")} ${c.dim("(examples list optional ones too: add what the dev server asks for)")}`]
-                : []),
-              `run with ${c.cyan("0b exec -- <command>")}: no .env file needed`,
-            ],
-          });
       }
     }
   }

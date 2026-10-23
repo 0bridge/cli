@@ -72,7 +72,11 @@ export function planSync(local: string | null, remote: string | null, base: stri
   return "conflict";
 }
 
-/** The skills shipped with 0bridge itself (installed on sign-in): about the CLI, so they stay local. */
+/**
+ * The skills shipped with 0bridge itself (installed on sign-in): about the CLI, so they stay local.
+ * `0bridge-secrets` isn't shipped any more (D86, CLI 0.2.44; `0b update` deletes it), but a copy
+ * left in a tool's skills folder must still never be uploaded as one of the user's own skills.
+ */
 export const BUILTIN_SKILLS = new Set(["0bridge", "0bridge-secrets"]);
 
 /** A file a skill's upload leaves out, and why. */

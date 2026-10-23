@@ -393,7 +393,7 @@ interface BackupIndex {
 
 /** Execute a plan. Every touched path is backed up first; returns the backup id. */
 export function executePlan(ctx: Context, plan: Plan): string {
-  if (plan.missing.length) throw new Error(`unresolved refs: ${plan.missing.join(", ")} — set them with \`0b secret set\``);
+  if (plan.missing.length) throw new Error(`unresolved refs: ${plan.missing.join(", ")} — this machine's secret store doesn't have them: add the value to that server's config in a tool here, then run \`0b import\``);
   const id = new Date().toISOString().replace(/[:.]/g, "-");
   const root = join(paths(ctx).backups, id);
   const index: BackupIndex = { createdAt: new Date().toISOString(), entries: [] };

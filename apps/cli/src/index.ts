@@ -14,7 +14,6 @@ import {
   loadManifest,
   loadState,
   openSecretStore,
-  withVault,
   accountName,
   defaultAccount,
   findAccount,
@@ -50,12 +49,11 @@ import { doctorCommand } from "./doctor.ts";
 import { setup } from "./setup.ts";
 import { execCommand, profileCommand } from "./profile.ts";
 import { historyCommand } from "./history.ts";
-import { filesCommand } from "./files.ts";
 import { installBackground, runBackground } from "./background.ts";
-import { secretCommand, vaultCommand } from "./vault.ts";
+import { vaultCommand } from "./vault.ts";
 import { here, projectCommand } from "./project.ts";
 import { useCommand } from "./use.ts";
-import { clipCommand } from "./clip.ts";
+import { clipRemoved } from "./removed.ts";
 import { updateCommand } from "./update.ts";
 import { resumeCommand } from "./resume.ts";
 import { hookCommand } from "./hook.ts";
@@ -67,7 +65,6 @@ import { webhookCommand } from "./webhook.ts";
 import { driveCommand } from "./drive.ts";
 import { usageCommand } from "./usage.ts";
 import { settingsCommand } from "./settings.ts";
-import { agentVmSetup } from "./agent-vm.ts";
 import { feedbackCommand } from "./feedback.ts";
 import { hostCommand } from "./host.ts";
 
@@ -80,9 +77,6 @@ ${c.bold("Usage")}
   0b setup                     Start here: sign in, add 0bridge to every AI tool on this machine,
         [--yes] [--only t,...]  connect services. --yes never prompts (for agents and scripts)
         [--connect a,b] [--web]
-  0b setup --agent-vm          Set up an AI agent's computer (Muse, Manus…) with no prompts: prints a link
-        [--attach <code>]       to approve, or uses a code from the dashboard; --name, --days (7), --email,
-        [--no-vault] [--no-wait] --platform, --qr <file.png>
   0b                           Interactive: pick, review, and sync (first run starts setup)
   0b init [--yes]              Set up ~/.0bridge from your tools (--yes: import everything, no prompts)
   0b import [--only t,...]     Merge tool configs into the manifest (writes only to ~/.0bridge)
@@ -116,35 +110,15 @@ ${c.bold("Usage")}
         [--global] [--shell]    --global: everywhere else too; --shell: eval "$(0b use <name> --shell)"
   0b use default | rm <name> | shims [off]   Back to the tool's own; forget one; claude and codex shims
                                that start the account picked for the repo you're in
-  0b secret set <NAME>         Store a secret in your vault, encrypted on this machine (asks for the value,
-        [--env dev|prod]        or reads stdin). For this repo; --global for every repo and \${secret:<NAME>}
-        [--global]
-  0b secret import [.env]      Move a .env file into the vault (--delete removes the file after).
-        [--dry-run] [--only A,B]  --dry-run lists names first (replaces? points at localhost?), stores
-                                nothing; --only moves just those names and keeps the file
-  0b secret paste              Paste KEY=value lines instead. Each is guessed as a secret (hidden,
-                                masked in agents' output) or a variable (PORT, NEXT_PUBLIC_*);
-                                --secret / --variable decide for all
-  0b secret set <NAME> --file key.pem   A value of several lines (a private key, a JSON service account)
-  0b secret set <NAME> --variable [value]   A plain setting; its value may go on the command line
-  0b secret list | rm <NAME>   Names only
-  0b secret show <NAME>        Show one value to you (secrets go to your terminal only, not to agents)
-  0b secret mark <NAME> --secret|--variable
-  0b secret off|on <NAME>      Switch a value off (kept, but commands don't get it) or back on
-  0b secret note <NAME> "…"    What it is ("acme org token"); shown in list. No text clears it
   0b project link [--strict]   Make this repo a project: its AI tools reach 0bridge at the project's own
                                 endpoint and see the connections limited to it (plus the global ones,
-                                unless --strict). Also: status, list, unlink, rm, strict on|off, cloud
+                                unless --strict). Also: status, list, unlink, rm, strict on|off
   0b project use <service> [--label a]   Limit a connection to this project (unuse undoes it)
   0b project hide <service> [--label a]  Keep a connection out of this project only (show undoes it),
                                 e.g. another company's Slack in this repo
-  0b project cloud             For agents in the cloud (Claude Code on the web): commit .mcp.json and an
-        [--codex] [--cursor]    upload hook that use ZEROB_TOKEN, and get a 90-day token for it
-        [--no-hooks] [--read-only]
-  0b exec [--env prod] -- <cmd>  Run a command with this repo's secrets and CLI profile as env vars
-        [--why "<sentence>"]    (and ZEROBRIDGE_ENV=dev|prod, so a script can tell it runs under 0b);
-                               --why is shown on the prod approval page: what the command is for
-  0b vault [status]            Whether this machine can open your vault
+  0b exec -- <cmd>             Run a command with this repo's CLI profile (and Claude Code and Codex accounts)
+  0b vault [status]            Whether this machine can open your vault (its key seals end-to-end history)
+  0b vault create              Make your vault key (0b history mode e2e does too); shows its recovery key once
   0b vault unlock              New machine: approve it in the browser (passkey) or with \`0b vault approve\`
         [--recovery-key]        on another machine; --recovery-key types the key instead
   0b vault approve             Hand the vault key to a machine that's asking (compare the codes)
@@ -154,7 +128,7 @@ ${c.bold("Usage")}
                                 --tool picks sources
   0b history search <words>    [--repo r] [--tool t] [--days n]; 0b history show <0b:ref>; 0b history list
   0b history mode server|e2e   server (default): your AI tools can search it. e2e: sealed with your
-                                vault key, only 0b on your machines can search it
+                                vault key (made here if you have none), only 0b on your machines can search it
   0b history exclude <repo> | forget <id>|--all | off | status
   0b resume <0b:id>            Continue a session from any tool here: Claude Code, Codex, Gemini or Cursor
         [--tool t] [--print]    (--print shows the handoff instead of starting a tool)
@@ -207,20 +181,7 @@ ${c.bold("Usage")}
   0b webhook list | rm | test | rotate <name> | events [name] [--follow]
   0b usage [--days 30]         Tokens and estimated cost by tool, model, repo or day (--by)
   0b usage on|off|forget       Upload token counts (never conversation text), even with history off; forget deletes them
-  0b files add <file>…         Sync personal files kept out of git (AGENTS.local.md, CLAUDE.local.md symlink,
-                                .claude/settings.local.json) to every clone of this repo, sealed with your vault
-                                key; every change is a version. Also: status, pull, push [--force], rm, log, restore
-  0b files statusline          Sync Claude Code's status line (the statusLine setting and its script) to
-                                your other machines. Files under ~ outside a repo work too: 0b files add ~/…
-  0b clip [file…]              Send what's on your clipboard (a screenshot, copied files or text), or files,
-                                to your agents: over SSH or anywhere, they read it once with bridge__clipboard
-                                within 10 minutes. Also: clip status, clip clear
-  0b clip listen on|off        Let agents ask this machine for its clipboard: a dialog asks you each time
-  0b clip sync on|off          On a Mac: images you copy (screenshots, copied images) go to your agents as you copy them
-  0b clip paste [dir]          Save what's waiting here (over SSH too) and print the paths
-  0b clip shims [off]          On a Linux server: ⌃V in Claude Code pastes the image you last copied on your Mac,
-                               received as you copy it (clip sync on|off does the same there)
-  0b background [on|off]       Run (or schedule every 15 min) the history, context and personal file sync
+  0b background [on|off]       Run (or schedule every 15 min) the history and context sync
   0b tool enable|disable <tool>
   0b update [--check]          Install the newest 0b (and restart its background jobs); --check only looks
   0b login [--web]             Sign in with a one-time code (works over SSH too); --web uses a browser redirect
@@ -352,7 +313,7 @@ if (explicitAccount && process.argv[2] !== "login") {
   }
 }
 
-const store = () => withVault(ctx, openSecretStore(ctx.storeDir));
+const store = () => openSecretStore(ctx.storeDir);
 const interactive = () => Boolean(process.stdin.isTTY && process.stdout.isTTY);
 
 function printImport(r: ImportReport) {
@@ -568,6 +529,8 @@ function tool(args: string[]) {
 async function main() {
   // `0b exec -- cmd --any --flags`: everything after is the command's, not ours.
   if (process.argv[2] === "exec") return execCommand(ctx, process.argv.slice(3));
+  // Removed in 0.2.44; a job or ⌃V stand-in from before still calls it: it cleans up after itself.
+  if (process.argv[2] === "clip") return clipRemoved(ctx, process.argv.slice(3));
   // `0b host request "…" --project p`: its own flags (--project takes a value there). --account
   // was already taken out of argv above (takeAccountFlag runs when this module loads), so it works here too.
   if (process.argv[2] === "host") return hostCommand(ctx, process.argv.slice(3), version);
@@ -600,42 +563,30 @@ async function main() {
       "client-secret": { type: "string" },
       connect: { type: "string" },
       global: { type: "boolean" },
-      delete: { type: "boolean" },
       "recovery-key": { type: "boolean" },
-      variable: { type: "boolean" },
-      secret: { type: "boolean" },
       repo: { type: "string" },
       tool: { type: "string" },
       days: { type: "string" },
       all: { type: "boolean" },
       quiet: { type: "boolean" },
       force: { type: "boolean" },
-      note: { type: "string" },
       strict: { type: "boolean" },
       print: { type: "boolean" },
       turns: { type: "string" },
       hooks: { type: "boolean" },
       "no-hooks": { type: "boolean" },
       worker: { type: "boolean" },
-      codex: { type: "boolean" },
-      cursor: { type: "boolean" },
       "read-only": { type: "boolean" },
       mode: { type: "string" },
       tags: { type: "string" },
       api: { type: "string" },
       auth: { type: "string" },
       spec: { type: "string" },
-      file: { type: "string" },
       app: { type: "string" },
       "allow-write": { type: "boolean" },
       qr: { type: "string" },
       email: { type: "string" },
-      "agent-vm": { type: "boolean" },
       name: { type: "string" },
-      attach: { type: "string" },
-      platform: { type: "string" },
-      "no-vault": { type: "boolean" },
-      "no-wait": { type: "boolean" },
       preset: { type: "string" },
       board: { type: "string" },
       route: { type: "string" },
@@ -674,19 +625,6 @@ async function main() {
     case "upgrade":
       return updateCommand(ctx, version, { check: values.check });
     case "setup":
-      if (values["agent-vm"])
-        return agentVmSetup(ctx, {
-          attach: values.attach,
-          email: values.email,
-          name: values.name,
-          days: values.days === undefined ? undefined : Number(values.days),
-          platform: values.platform,
-          qr: values.qr,
-          noVault: values["no-vault"],
-          noWait: values["no-wait"],
-          server: values.server,
-          only: parseTools(values.only),
-        });
       return setup(ctx, {
         yes: values.yes,
         only: parseTools(values.only),
@@ -728,21 +666,14 @@ async function main() {
     case "skill":
     case "skills":
       return skill(rest, values);
-    case "secret":
-    case "secrets":
-      return secretCommand(ctx, rest, { env: values.env?.at(-1), global: values.global, delete: values.delete, yes: values.yes, variable: values.variable, secret: values.secret, note: values.note, file: values.file, only: values.only, dryRun: values["dry-run"] });
     case "vault":
       return vaultCommand(ctx, rest, { recoveryKey: values["recovery-key"] });
-    case "files":
-      return filesCommand(ctx, rest, { force: values.force, quiet: values.quiet, all: values.all });
     case "background":
       if (rest[0] === "on" || rest[0] === "off") return installBackground(ctx, rest[0] === "on");
       return runBackground(ctx, Boolean(values.quiet));
-    case "clip":
-      return clipCommand(ctx, rest);
     case "project":
     case "projects":
-      return projectCommand(ctx, rest, { strict: values.strict, label: values.label, codex: values.codex, cursor: values.cursor, noHooks: values["no-hooks"], readOnly: values["read-only"] });
+      return projectCommand(ctx, rest, { strict: values.strict, label: values.label });
     case "history":
       return historyCommand(ctx, rest, {
         repo: values.repo,

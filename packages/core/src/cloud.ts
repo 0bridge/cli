@@ -16,17 +16,6 @@ export const GATEWAY_NAME = "0bridge";
 export { API_CONNECTORS, DIRECT_ONLY, PRESETS } from "./presets.ts";
 export { APP_SETUP, appSetupFor, type AppSetup } from "./apps.ts";
 
-export interface RemoteFile {
-  repo: string;
-  path: string;
-  version: number;
-  kind: "file" | "symlink";
-  ct: string | null;
-  hash: string;
-  size: number;
-  device: string | null;
-  at: number;
-}
 export interface HistoryStats {
   mode: "server" | "e2e";
   sessions: number;
@@ -314,12 +303,6 @@ async function retrying(send: () => Promise<Response>, idempotent: boolean, serv
   }
 }
 
-/** What a prod request says about itself on the approval page: the agent's sentence, and where it runs (names, never values). */
-export interface GrantAsk {
-  why?: string;
-  context?: { agent?: string; repo?: string; branch?: string; cwd?: string; root?: string; names?: string[] };
-}
-
 export class CloudClient {
   constructor(
     readonly server: string,
@@ -396,7 +379,7 @@ export class CloudClient {
     try {
       msg = JSON.parse(body || "{}");
     } catch {}
-    if (res.status === 401) throw new CloudError("0bridge didn't accept this device's sign-in (signed out, revoked or expired): sign in again with `0b login` (an agent's computer: `0b setup --agent-vm`)", 401);
+    if (res.status === 401) throw new CloudError("0bridge didn't accept this device's sign-in (signed out, revoked or expired): sign in again with `0b login`", 401);
     if (msg.error) throw new CloudError(msg.error.message ?? "the MCP call failed", res.status);
     if (!res.ok || !msg.result) throw new CloudError(`${res.status} ${res.statusText}`.trim(), res.status);
     return msg.result;
@@ -418,30 +401,6 @@ export class CloudClient {
   setConnectionProjects(id: string, projects: string[], hidden?: string[]) {
     return this.req<{ display: string; projects: string[]; hidden: string[] }>(`/connections/${encodeURIComponent(id)}/projects`, { method: "PUT", body: JSON.stringify({ projects, ...(hidden ? { hidden } : {}) }) });
   }
-  // ── Clipboard relay ──
-  /** Send something for an agent to read once (bridge__clipboard), within 10 minutes. */
-  sendClip(item: { name: string; mime: string; data: string; from?: string; sync?: boolean }) {
-    return this.req<{ id: string; name: string; mime: string; size: number; at: number }>("/clip", { method: "POST", body: JSON.stringify(item) });
-  }
-  clipsWaiting() {
-    return this.req<{ id: string; name: string; mime: string; size: number; at: number; from?: string }[]>("/clip");
-  }
-  clearClips() {
-    return this.req<{ deleted: number }>("/clip", { method: "DELETE" });
-  }
-  /** The newest image waiting, left in place; null when there's none. */
-  async latestImage() {
-    try {
-      return await this.req<{ id: string; name: string; mime: string; size: number; at: number; data: string }>("/clip/image");
-    } catch (e) {
-      if (e instanceof CloudError && e.status === 404) return null;
-      throw e;
-    }
-  }
-  /** Take what's waiting (each item once, like an agent's read), with its data in base64. */
-  takeClips() {
-    return this.req<{ id: string; name: string; mime: string; size: number; at: number; from?: string; data: string }[]>("/clip/take", { method: "POST" });
-  }
   // ── Projects ──
   /** With `suggest`, also repos you work in that aren't projects yet (slower). */
   projects(suggest = false) {
@@ -460,23 +419,6 @@ export class CloudClient {
   /** A token for the project's MCP endpoint only, and that endpoint's URL. */
   projectToken(id: string, label: string) {
     return this.req<{ id: string; token: string; url: string }>(`/projects/${encodeURIComponent(id)}/token`, { method: "POST", body: JSON.stringify({ label }) });
-  }
-  // ── Personal files kept out of git ──
-  files(repo?: string) {
-    return this.req<RemoteFile[]>(`/files${repo ? `?repo=${encodeURIComponent(repo)}` : ""}`);
-  }
-  fileVersions(repo: string, path: string) {
-    return this.req<(Omit<RemoteFile, "ct"> & { deleted: boolean })[]>(`/files/versions?${new URLSearchParams({ repo, path })}`);
-  }
-  fileVersion(repo: string, path: string, version: number) {
-    return this.req<RemoteFile>(`/files/version?${new URLSearchParams({ repo, path, version: String(version) })}`);
-  }
-  /** A 409 comes back as `{ code: "CONFLICT", latest }`: another machine changed the file since `base`. */
-  putFile(f: { repo: string; path: string; kind: "file" | "symlink"; ct: string | null; hash: string; size: number; device: string; base: number }) {
-    return this.req<{ ok: true; version: number } | { code: "CONFLICT"; error: string; latest: RemoteFile }>("/files", { method: "PUT", body: JSON.stringify(f) }, [409]);
-  }
-  purgeFiles(repo?: string, path?: string) {
-    return this.req<{ deleted: number }>(`/files?${new URLSearchParams({ ...(repo ? { repo } : {}), ...(path ? { path } : {}) })}`, { method: "DELETE" });
   }
   // ── Conversation history ──
   /** `f`: count what the Free window hides of one repo or tool only. */
@@ -564,31 +506,13 @@ export class CloudClient {
   disconnect(id: string) {
     return this.req<void>(`/connections/${encodeURIComponent(id)}`, { method: "DELETE" });
   }
-  /** The vault's key id and every ciphertext. */
+  /** The vault's key id. The gateway keeps no values any more: `items` is always empty. */
   vault() {
     return this.req<VaultState>("/vault");
   }
   /** Record the key a new vault is encrypted with. 409 (with the existing keyId) if there's already one. */
   createVault(keyId: string) {
     return this.req<{ keyId: string; error?: string }>("/vault", { method: "POST", body: JSON.stringify({ keyId }) }, [409]);
-  }
-  putSecret(keyId: string, item: { scope: string; env: string; name: string; ct: string; kind?: "secret" | "variable"; note?: string | null; enabled?: boolean }) {
-    return this.req<void>("/vault/items", { method: "PUT", body: JSON.stringify({ keyId, ...item }) });
-  }
-  /** Several puts, patches and deletes in one request, all or nothing. */
-  vaultBatch(keyId: string | null, ops: ({ op: "put"; scope: string; env: string; name: string; ct: string; kind?: "secret" | "variable"; note?: string | null } | { op: "delete"; scope: string; env: string; name: string })[]) {
-    return this.req<{ applied: number }>("/vault/batch", { method: "POST", body: JSON.stringify({ keyId, ops }) });
-  }
-  /** Switch a value on or off, change its kind, or set its (sealed) note, without the value. 404 when there's no such value. */
-  patchSecret(item: { scope: string; env: string; name: string; kind?: "secret" | "variable"; note?: string | null; enabled?: boolean }) {
-    return this.req<{ error?: string } | undefined>("/vault/items", { method: "PATCH", body: JSON.stringify(item) }, [404]);
-  }
-  /** Ask the user (in the browser) to let this device use a protected env for a while. */
-  requestGrant(scope: string, env: string, reason?: string, ask?: GrantAsk) {
-    return this.req<{ id: string; code: string; url: string; expiresAt: number }>("/vault/grants", { method: "POST", body: JSON.stringify({ scope, env, reason, ...ask }) });
-  }
-  grant(id: string) {
-    return this.req<{ status: "pending" | "approved" | "denied" | "expired"; until: number | null }>(`/vault/grants/${encodeURIComponent(id)}`);
   }
   /** The vault key a `0b login` approval sealed to this machine (T-039), once; 404 when none came with it. */
   loginKey(deviceCode: string) {
@@ -607,8 +531,5 @@ export class CloudClient {
   }
   decidePairing(id: string, sealed: { ephemeralPub: string; ct: string } | null) {
     return this.req<void>(`/vault/pairings/${encodeURIComponent(id)}/${sealed ? "approve" : "deny"}`, { method: "POST", body: JSON.stringify(sealed ?? {}) });
-  }
-  deleteSecret(item: { scope: string; env: string; name: string }) {
-    return this.req<{ error?: string } | undefined>(`/vault/items?${new URLSearchParams(item)}`, { method: "DELETE" }, [404]);
   }
 }

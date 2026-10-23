@@ -170,7 +170,7 @@ export function printPlan(ctx: Context, plan: Plan, secrets: string[], showDiff:
 
 export function printWarnings(ctx: Context, plan: Plan) {
   for (const w of plan.warnings) console.log(`${c.yellow("!")} ${tilde(ctx, w)}`);
-  for (const m of plan.missing) console.log(`${c.red("✗")} unresolved ${m} — set it with ${c.cyan(`0b secret set ${m.replace(/^secret:/, "")}`)}`);
+  for (const m of plan.missing) console.log(`${c.red("✗")} unresolved ${m} — this machine's secret store doesn't have it: add the value to that server's config in a tool here, then ${c.cyan("0b import")}`);
 }
 
 /** One line per tool (and per other copy of it: another account, a checkout): what a sync would change. */

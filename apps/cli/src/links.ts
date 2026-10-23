@@ -42,8 +42,3 @@ export function accountAt(ctx: Context, dir: string): string | null {
   return at ? linkAccount(ctx, at.link) : null;
 }
 
-/** The account a repo's checkouts are linked with, if any (the background sync of personal files). */
-export function accountForRepo(ctx: Context, repo: string): string | null {
-  const link = Object.values(loadLinks(ctx).links).find((l) => l.repo === repo);
-  return link ? linkAccount(ctx, link) : null;
-}

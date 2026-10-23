@@ -95,14 +95,6 @@ export async function openValueAsync(key: Uint8Array<ArrayBuffer>, item: { scope
   return new TextDecoder().decode(pt);
 }
 
-/** A value's note is sealed next to it, under a name no value can have (same as the CLI's `noteAt`). */
-const noteAt = (at: { scope: string; env: string; name: string }) => ({ scope: at.scope, env: at.env, name: `${at.name}#note` });
-export const sealNoteAsync = (key: Uint8Array<ArrayBuffer>, at: { scope: string; env: string; name: string }, text: string) => sealValueAsync(key, noteAt(at), text);
-export async function openNoteAsync(key: Uint8Array<ArrayBuffer>, item: { scope: string; env: string; name: string; note?: string | null }): Promise<string | null> {
-  if (!item.note) return null;
-  return openValueAsync(key, { ...noteAt(item), ct: item.note }).catch(() => null);
-}
-
 async function hkdfAesKey(secret: Uint8Array<ArrayBuffer>, info: string): Promise<CryptoKey> {
   const base = await subtle().importKey("raw", secret, "HKDF", false, ["deriveKey"]);
   return subtle().deriveKey({ name: "HKDF", hash: "SHA-256", salt: new Uint8Array(32), info: te.encode(info) }, base, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
@@ -169,50 +161,4 @@ export async function sealForDevice(vaultKey: Uint8Array<ArrayBuffer>, devicePub
 /** New machine: recover the vault key from the approval. */
 export async function openFromApprover(privateKey: CryptoKey, devicePub: string, ephemeralPub: string, ct: string): Promise<Uint8Array<ArrayBuffer>> {
   return unseal(await sharedKey(privateKey, ephemeralPub), ct, unb64u(devicePub));
-}
-
-// ── Pasting .env files ──
-
-/** KEY=value lines, as dotenv reads them: comments, `export`, quotes, escaped newlines in double quotes. */
-export function parseDotenv(text: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  const re = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_.-]*)\s*=\s*('(?:[^'])*'|"(?:\\.|[^"\\])*"|[^\n]*)\s*$/gm;
-  for (const m of text.matchAll(re)) {
-    let v = m[2]!.trim();
-    if (v.startsWith("'")) v = v.slice(1, -1);
-    else if (v.startsWith('"')) v = v.slice(1, -1).replace(/\\n/g, "\n").replace(/\\(["\\])/g, "$1");
-    else v = v.replace(/\s+#.*$/, "");
-    out[m[1]!] = v;
-  }
-  return out;
-}
-
-export type VaultKind = "secret" | "variable";
-
-const SECRET_NAME_HINT = /(key|token|secret|passw|pwd|auth|credential|cookie|session|private|signing|salt|dsn|webhook)/i;
-const PUBLIC_PREFIX = /^(NEXT_PUBLIC|VITE|EXPO_PUBLIC|PUBLIC|REACT_APP|NUXT_PUBLIC)_/;
-const PLAIN_NAME_HINT = /^(NODE_ENV|PORT|HOST|HOSTNAME|TZ|LOG_LEVEL|DEBUG|ENV|ENVIRONMENT|APP_ENV|REGION|.*_(PORT|HOST|REGION|ENV|MODE|LEVEL|NAME|VERSION))$/;
-
-/**
- * A first guess for pasted values: public-looking settings (PORT, NODE_ENV, NEXT_PUBLIC_*) are
- * variables, everything else is a secret (when unsure, hide it). URLs with credentials in them are secrets. The user
- * can switch any of them.
- */
-export function guessKind(name: string, value: string): VaultKind {
-  // Shipped to browsers by the framework anyway (NEXT_PUBLIC_…_KEY included).
-  if (PUBLIC_PREFIX.test(name)) return "variable";
-  if (SECRET_NAME_HINT.test(name)) return "secret";
-  if (/:\/\/[^/\s:@]+:[^/\s@]+@/.test(value)) return "secret";
-  if (PLAIN_NAME_HINT.test(name)) return "variable";
-  if (/^(true|false|\d{1,6}|[a-z]+)$/i.test(value) && value.length <= 12) return "variable";
-  return "secret";
-}
-
-/**
- * A value that names this machine (localhost, 127.0.0.1, a Docker host alias): a local database
- * or dev server address. Stored in the vault, every other machine gets the same address, which
- * usually means the wrong thing there, so an import points these out before storing them.
- */
-export function pointsAtThisMachine(value: string): boolean {
-  return /(^|[/@:\s=])(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|host\.docker\.internal)([:/\s]|$)/i.test(value);
 }

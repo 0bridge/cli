@@ -23,7 +23,7 @@ describe("--include-logs", () => {
     const lines = Array.from({ length: 60 }, (_, i) => `line ${i}`);
     writeFileSync(join(ctx.storeDir, "background.log"), `${lines.join("\n")}\nsync with STRIPE_SECRET_KEY=sk_live_abcdefghijklmnop1234 in ${home}/code/acme\nvalue my-vault-value-123 leaked\n\n`);
     writeFileSync(join(ctx.storeDir, "sync", "worker.log"), "token 0b_AbCdEfGhIjKlMnOpQrStUvWxYz012345 refused\n");
-    writeFileSync(join(ctx.storeDir, "clip.log"), "\n\n");
+    writeFileSync(join(ctx.storeDir, "agent.log"), "\n\n");
     const out = collectLogs(ctx, ["my-vault-value-123"], 5);
     expect(out).toBe(
       [
@@ -41,8 +41,6 @@ describe("--include-logs", () => {
     expect(logFiles(ctx).map((p) => p.slice(home.length).split(sep).join("/"))).toEqual([
       "/.0bridge/background.log",
       "/.0bridge/agent.log",
-      "/.0bridge/clip.log",
-      "/.0bridge/clipsync.log",
       "/.0bridge/sync/worker.log",
       "/.0bridge/status/worker.log",
     ]);

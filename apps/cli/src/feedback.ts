@@ -6,7 +6,6 @@ import { createInterface } from "node:readline/promises";
 import { accountName, loadCloud, redact, shellSplit, type Context } from "@0bridge/core";
 import { cloudClient } from "./cloud.ts";
 import { statusDir, syncDir } from "./hook.ts";
-import { vaultValues } from "./vault.ts";
 import { c, tilde } from "./ui.ts";
 
 /**
@@ -34,7 +33,7 @@ const LOG_LINES = 40;
 /** 0b's logs on this machine: the background jobs' (service.ts) and the hook workers'. */
 export function logFiles(ctx: Context): string[] {
   return [
-    ...["background", "agent", "clip", "clipsync"].map((n) => join(ctx.storeDir, `${n}.log`)),
+    ...["background", "agent"].map((n) => join(ctx.storeDir, `${n}.log`)),
     join(syncDir(ctx), "worker.log"),
     join(statusDir(ctx), "worker.log"),
   ];
@@ -137,13 +136,9 @@ export async function feedbackCommand(ctx: Context, args: string[], opts: Feedba
   }
   if (message.length > MAX_MESSAGE) throw new Error(`the message has ${message.length.toLocaleString("en")} characters; at most ${MAX_MESSAGE.toLocaleString("en")}`);
 
-  // The vault's values never leave this machine, even in a report.
-  let values: string[] = [];
-  try {
-    values = vaultValues(ctx);
-  } catch {}
-  const logs = opts.includeLogs ? collectLogs(ctx, values) : undefined;
-  const report = buildReport(kind, redact(message, values), version, logs);
+  // Tokens and keys are masked before anything leaves this machine, even in a report.
+  const logs = opts.includeLogs ? collectLogs(ctx, []) : undefined;
+  const report = buildReport(kind, redact(message), version, logs);
 
   console.log(`This report goes to the 0bridge team, from ${c.bold(accountName(cloud))}:\n`);
   console.log(`${c.dim("Kind")}      ${report.kind}`);

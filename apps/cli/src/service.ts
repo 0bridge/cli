@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Context } from "@0bridge/core";
@@ -15,8 +15,10 @@ import { c } from "./ui.ts";
  * manager: the files are written and nothing is loaded, enabled or scheduled.
  */
 
-export type ServiceName = "background" | "clip" | "clipsync" | "agent" | "webhook";
-export const SERVICE_NAMES: ServiceName[] = ["background", "clip", "clipsync", "agent", "webhook"];
+export type ServiceName = "background" | "agent" | "webhook";
+export const SERVICE_NAMES: ServiceName[] = ["background", "agent", "webhook"];
+/** Jobs of features since removed (the clipboard, D86): only ever removed (removed.ts). */
+export type RemovedService = "clip" | "clipsync";
 export interface ServiceOptions {
   /** Run every this many seconds. */
   interval?: number;
@@ -26,9 +28,7 @@ export interface ServiceOptions {
 type Manager = "launchd" | "systemd" | "cron" | "schtasks" | "none";
 
 const DESCRIPTION: Record<ServiceName, string> = {
-  background: "history and personal file sync",
-  clip: "clipboard answers (0b clip listen)",
-  clipsync: "clipboard sync (0b clip sync)",
+  background: "history and context sync",
   agent: "coding agents for your AI apps (0b agent)",
   webhook: "webhook runs (0b webhook listen)",
 };
@@ -42,15 +42,15 @@ const logOf = (ctx: Context, name: ServiceName) => join(ctx.storeDir, `${name}.l
 /**
  * The script every job and hook runs. macOS names a background item after its signer ("Jarred
  * Sumner" for bun, the Node.js Foundation for node); a small script of our own named 0bridge is
- * what shows instead. Arguments are a 0b command (`clip listen`, `hook claude`); none, or flags
+ * what shows instead. Arguments are a 0b command (`agent run`, `hook claude`); none, or flags
  * only, is the sync (`0b background`), which is what LaunchAgents written before had.
  */
 export function renderBin(node: string, script: string, platform: NodeJS.Platform = process.platform): string {
   if (platform === "win32")
-    return `@echo off\r\nrem 0bridge in the background: history and personal file sync, clipboard answers, agents' turn-end hooks.\r\nrem Remove the jobs with: 0b background off / 0b clip listen off / 0b history hooks off\r\nset "first=%~1"\r\nif not defined first goto sync\r\nif "%first:~0,1%"=="-" goto sync\r\n"${node}" "${script}" %*\r\nexit /b %errorlevel%\r\n:sync\r\n"${node}" "${script}" background %*\r\n`;
+    return `@echo off\r\nrem 0bridge in the background: history and context sync, agents' turn-end hooks.\r\nrem Remove the jobs with: 0b background off / 0b history hooks off\r\nset "first=%~1"\r\nif not defined first goto sync\r\nif "%first:~0,1%"=="-" goto sync\r\n"${node}" "${script}" %*\r\nexit /b %errorlevel%\r\n:sync\r\n"${node}" "${script}" background %*\r\n`;
   return `#!/bin/sh
-# 0bridge in the background: history and personal file sync, clipboard answers, agents' turn-end hooks.
-# Remove the jobs with: 0b background off / 0b clip listen off / 0b history hooks off
+# 0bridge in the background: history and context sync, agents' turn-end hooks.
+# Remove the jobs with: 0b background off / 0b history hooks off
 case "$1" in ""|-*) set -- background "$@" ;; esac
 exec "${node}" "${script}" "$@"
 `;
@@ -69,8 +69,8 @@ export function ensureBin(ctx: Context): string {
 
 // ── macOS: LaunchAgents ──
 
-const label = (name: ServiceName) => `dev.0bridge.${name}`;
-const plistPath = (ctx: Context, name: ServiceName) => join(ctx.home, "Library", "LaunchAgents", `${label(name)}.plist`);
+const label = (name: ServiceName | RemovedService) => `dev.0bridge.${name}`;
+const plistPath = (ctx: Context, name: ServiceName | RemovedService) => join(ctx.home, "Library", "LaunchAgents", `${label(name)}.plist`);
 const xml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 export function renderPlist(name: ServiceName, argv: string[], log: string, opts: ServiceOptions): string {
@@ -103,7 +103,7 @@ function launchd(ctx: Context, name: ServiceName, args: string[] | null, opts: S
 // ── Linux: systemd user units, else crontab ──
 
 const unitDir = (ctx: Context) => join(ctx.home, ".config", "systemd", "user");
-const unitName = (name: ServiceName) => `0bridge-${name}`;
+const unitName = (name: ServiceName | RemovedService) => `0bridge-${name}`;
 /** systemd's own quoting for ExecStart: double quotes, and % doubled (it starts a specifier). */
 const sdQuote = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/%/g, "%%")}"`;
 
@@ -134,7 +134,7 @@ WantedBy=timers.target
 }
 
 /** A crontab with our line for `name` (tagged `# 0bridge:<name>`) set, or removed when `line` is null. */
-export function renderCrontab(current: string, name: ServiceName, line: string | null): string {
+export function renderCrontab(current: string, name: ServiceName | RemovedService, line: string | null): string {
   const tag = `# 0bridge:${name}`;
   const kept = current.split("\n").filter((l) => l.trim() && !l.trimEnd().endsWith(tag));
   if (line) kept.push(`${line} ${tag}`);
@@ -199,9 +199,9 @@ function cron(ctx: Context, name: ServiceName, args: string[] | null, opts: Serv
 
 // ── Windows: Task Scheduler ──
 
-const taskName = (name: ServiceName) => `0bridge\\${name}`;
-const wrapperPath = (ctx: Context, name: ServiceName) => join(ctx.storeDir, "bin", `0bridge-${name}.cmd`);
-const launcherPath = (ctx: Context, name: ServiceName) => join(ctx.storeDir, "bin", `0bridge-${name}.vbs`);
+const taskName = (name: ServiceName | RemovedService) => `0bridge\\${name}`;
+const wrapperPath = (ctx: Context, name: ServiceName | RemovedService) => join(ctx.storeDir, "bin", `0bridge-${name}.cmd`);
+const launcherPath = (ctx: Context, name: ServiceName | RemovedService) => join(ctx.storeDir, "bin", `0bridge-${name}.vbs`);
 
 /** The .cmd a task runs: once (interval), or in a loop that restarts it 5 s after it stops (keepAlive). */
 export function renderWrapper(name: ServiceName, bin: string, args: string[], log: string, opts: ServiceOptions): string {
@@ -282,7 +282,7 @@ export function restartServices(ctx: Context): string[] {
   const restarted: string[] = [];
   if (!isReal(ctx)) return restarted;
   ensureBin(ctx);
-  for (const name of ["clip", "clipsync", "agent", "webhook"] as const) {
+  for (const name of ["agent", "webhook"] as const) {
     if (!serviceInstalled(ctx, name)) continue;
     let ok = false;
     if (process.platform === "darwin" && typeof process.getuid === "function") ok = spawnSync("launchctl", ["kickstart", "-k", `gui/${process.getuid()}/${label(name)}`], { stdio: "ignore" }).status === 0;
@@ -293,4 +293,53 @@ export function restartServices(ctx: Context): string[] {
     if (ok) restarted.push(name);
   }
   return restarted;
+}
+
+/**
+ * Remove a removed feature's job for good, wherever an older 0b put it; whether there was one. It
+ * can run inside that very job (a leftover job runs this 0b), so its files go first and the
+ * service manager stops it last, which may end this process.
+ */
+export function removeService(ctx: Context, name: RemovedService): boolean {
+  const real = isReal(ctx);
+  const startup = real && process.env.APPDATA ? join(process.env.APPDATA, "Microsoft", "Windows", "Start Menu", "Programs", "Startup", `0bridge-${name}.vbs`) : null;
+  const unit = `${unitName(name)}.service`;
+  const files = [
+    plistPath(ctx, name),
+    join(unitDir(ctx), unit),
+    join(unitDir(ctx), `${unitName(name)}.timer`),
+    join(unitDir(ctx), "default.target.wants", unit),
+    wrapperPath(ctx, name),
+    launcherPath(ctx, name),
+    ...(startup ? [startup] : []),
+  ];
+  const present = (f: string) => {
+    try {
+      lstatSync(f);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  let found = files.filter(present).length > 0;
+  for (const f of files) rmSync(f, { force: true });
+  if (real && process.platform === "linux" && has("crontab")) {
+    const cur = spawnSync("crontab", ["-l"], { encoding: "utf8" });
+    const current = cur.status === 0 ? cur.stdout : "";
+    const next = renderCrontab(current, name, null);
+    if (next !== current) {
+      spawnSync("crontab", ["-"], { input: next, encoding: "utf8" });
+      found = true;
+    }
+  }
+  if (!real || !found) return found;
+  if (process.platform === "darwin") spawnSync("launchctl", ["remove", label(name)], { stdio: "ignore" });
+  else if (process.platform === "win32") {
+    spawnSync("schtasks", ["/Delete", "/F", "/TN", taskName(name)], { stdio: "ignore", windowsHide: true });
+    spawnSync("schtasks", ["/End", "/TN", taskName(name)], { stdio: "ignore", windowsHide: true });
+  } else if (existsSync("/run/systemd/system")) {
+    spawnSync("systemctl", ["--user", "daemon-reload"], { stdio: "ignore" });
+    spawnSync("systemctl", ["--user", "stop", unit], { stdio: "ignore" });
+  }
+  return true;
 }

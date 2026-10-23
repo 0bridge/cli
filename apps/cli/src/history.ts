@@ -43,7 +43,7 @@ import { cloudClient } from "./cloud.ts";
 import { loadDriveState } from "./drive-sync.ts";
 import { pendingMarks, takeMarks, workerLockPath } from "./hook.ts";
 import { binPath, ensureBin } from "./service.ts";
-import { localKey, vaultValues } from "./vault.ts";
+import { localKey, openVault } from "./vault.ts";
 import { c } from "./ui.ts";
 
 /**
@@ -206,13 +206,12 @@ async function upload(ctx: Context, opts: HistoryOptions): Promise<void> {
   const { client, cfg: account } = cloudClient(ctx);
   const { mode } = countsOnly ? { mode: "server" } : await client.historyStats();
   const key = mode === "e2e" ? (localKey(ctx) ?? fail(`history is end-to-end encrypted and this machine doesn't have the vault key: run ${c.cyan("0b vault unlock")}`)) : null;
-  const values = vaultValues(ctx);
   let sessions = 0;
   let messages = 0;
   let skipped = 0;
   let usage = 0;
   for (;;) {
-    const got = collectHistory(ctx, cfg, values, { maxBytes: ROUND_BYTES, countsOnly });
+    const got = collectHistory(ctx, cfg, [], { maxBytes: ROUND_BYTES, countsOnly });
     skipped += got.skipped;
     // Done when no log moved on: nothing left, or only lines still being written.
     if (!Object.entries(got.cursors).some(([k, v]) => cfg.files[k]?.offset !== v.offset || cfg.files[k]?.seq !== v.seq || !(k in cfg.files))) break;
@@ -360,10 +359,17 @@ async function setMode(ctx: Context, mode: string | undefined, opts: HistoryOpti
   const { client } = cloudClient(ctx);
   const cur = await client.historyStats();
   if (cur.mode === mode) return console.log(`Already ${mode}.`);
-  if (mode === "e2e" && !localKey(ctx)) fail(`end-to-end mode uses your vault key, which this machine doesn't have: run ${c.cyan("0b vault unlock")} (or create a vault with ${c.cyan("0b secret set")})`);
   // What's stored stays in the form it was sent, so switching starts over: delete, then re-upload.
   if (cur.sessions && !opts.yes)
     fail(`switching deletes the ${cur.sessions} sessions stored now and uploads them again ${mode === "e2e" ? "encrypted" : "readable"} from this machine. Run again with --yes`);
+  // End-to-end mode seals with the vault key. An account with no vault gets one here (its recovery
+  // key shown once); one whose vault this machine can't open is told how to unlock it.
+  if (mode === "e2e")
+    try {
+      await openVault(ctx, { create: true });
+    } catch (e) {
+      fail(`end-to-end mode uses your vault key: ${(e as Error).message}`);
+    }
   await client.forgetHistory();
   await client.setHistoryMode(mode);
   const cfg = loadHistoryConfig(ctx);

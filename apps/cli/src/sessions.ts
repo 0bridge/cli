@@ -25,7 +25,6 @@ import {
 import { cloudClient } from "./cloud.ts";
 import { statusDir, statusLockPath, statusMarksDir, takeStatusMarks, type LiveState, type NeedKind, type NeedWhy, type StatusMark } from "./hook.ts";
 import { binPath, ensureBin } from "./service.ts";
-import { vaultValues } from "./vault.ts";
 import { c } from "./ui.ts";
 
 /**
@@ -444,7 +443,7 @@ export async function runStatusWorker(ctx: Context, deps?: Partial<WorkerDeps>):
       repo: (cwd) => repoFor(cwd),
       branch: gitBranch,
       lastAssistant: lastAssistantText,
-      values: () => vaultValues(ctx),
+      values: () => [],
       titles: titleCache(ctx),
       machine: hostname().replace(/\.local$/, ""),
       log: (msg) => console.error(`${stamp()} ${msg}`),

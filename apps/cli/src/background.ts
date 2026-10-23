@@ -5,8 +5,8 @@ import { installService, serviceInstalled } from "./service.ts";
 import { c } from "./ui.ts";
 
 /**
- * One background job keeps this machine's conversation history, personal files and
- * context (profile, instructions, skills) in sync: `0b background` every 15 minutes, through the
+ * One background job keeps this machine's conversation history and context (profile,
+ * instructions, skills) in sync: `0b background` every 15 minutes, through the
  * OS's service manager (service.ts). The agents' turn-end hooks upload a conversation within
  * seconds; this catches whatever they miss, and the tools without hooks. Drive folders
  * cloned here aren't in it: whoever works in one syncs it right before reading or writing
@@ -46,11 +46,18 @@ export function upgradeBackground(ctx: Context): void {
   if (backgroundInstalled(ctx) && outdated(ctx)) installBackground(ctx, true, true);
 }
 
-/** What the job runs: history if it's on here, then the context, then every tracked personal file. Not Drive folders. */
+/** What the job runs: history if it's on here, then the context. Not Drive folders. */
 export async function runBackground(ctx: Context, quiet: boolean): Promise<void> {
   const { syncHistory } = await import("./history.ts");
-  const { syncAllFiles } = await import("./files.ts");
   const stamp = () => new Date().toISOString();
+  try {
+    // Once per machine: what removed features left here, for machines updated by an older `0b update`.
+    const { cleanUpRemovedOnce } = await import("./removed.ts");
+    const removed = cleanUpRemovedOnce(ctx);
+    if (removed.length) console.log(`${stamp()} removed what 0b no longer has: ${removed.join(", ")}`);
+  } catch (e) {
+    console.error(`${stamp()} cleanup: ${e instanceof Error ? e.message : e}`);
+  }
   try {
     // A newer 0b brings newer instructions for agents: every tool gets them without a new setup.
     const { refreshBridgeSkills } = await import("./cloud.ts");
@@ -70,10 +77,5 @@ export async function runBackground(ctx: Context, quiet: boolean): Promise<void>
     if (loadCloud(ctx)) await syncContext(ctx, { quiet });
   } catch (e) {
     console.error(`${stamp()} context: ${e instanceof Error ? e.message : e}`);
-  }
-  try {
-    await syncAllFiles(ctx, quiet);
-  } catch (e) {
-    console.error(`${stamp()} files: ${e instanceof Error ? e.message : e}`);
   }
 }

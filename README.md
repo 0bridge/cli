@@ -14,12 +14,10 @@ Getting started, every command and how it all works: [0bridge.dev/docs](https://
 ## What runs on your machine
 
 - **Tool settings.** `0b setup` and `0b apply` write the 0bridge endpoint, your MCP servers, skills and instructions into each AI tool's own config (Claude Code, Codex, Cursor, Gemini CLI), backing every file up first. See `packages/core/src/adapters.ts` and `plan.ts`.
-- **The vault.** Secrets are encrypted here before they're uploaded (AES-256-GCM, a key only your devices hold), and `0b exec` hands them to a command as environment variables, masking them in output an agent reads. See `packages/core/src/vault-crypto.ts`, `vault.ts` and `apps/cli/src/vault.ts`.
-- **Conversation history,** only if you turn it on: read from your AI tools' local files, with vault values and key-shaped text masked on this machine before upload. See `packages/core/src/history.ts`.
+- **The vault key.** Made on your machine and kept in the OS's secret store; it goes to your other machines only sealed to them, never readable by the server. End-to-end history (`0b history mode e2e`) is encrypted with it (AES-256-GCM). See `packages/core/src/vault-crypto.ts`, `vault.ts` and `apps/cli/src/vault.ts`.
+- **Conversation history,** only if you turn it on: read from your AI tools' local files, with key-shaped text masked on this machine before upload. See `packages/core/src/history.ts`.
 - **Hooks,** only if you turn on history or the session board: one silent entry per event in each AI tool's hook settings, next to whatever is already there. It writes a note and a background worker posts the state, with up to two redacted lines of text and none with end-to-end history. See `apps/cli/src/hook.ts` and `sessions.ts`.
 - **Token counts,** with history or `0b usage on`: counts only, never text, read from the same local files. See `apps/cli/src/usage.ts`.
-- **Agent computers.** `0b setup --agent-vm` sets up an AI agent's own computer without prompts, with an expiring token. It installs no background service. See `apps/cli/src/agent-vm.ts`.
-- **Personal files** are sealed with your vault key before upload (`apps/cli/src/files.ts`).
 
 What the server can and can't read: [0bridge.dev/docs/security](https://0bridge.dev/docs/security).
 

@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import type { Context } from "@0bridge/core";
 import { upgradeBackground } from "./background.ts";
-import { stopReceiver } from "./clip.ts";
+import { cleanUpRemoved } from "./removed.ts";
 import { restartServices } from "./service.ts";
 import { c } from "./ui.ts";
 
@@ -32,12 +32,13 @@ export function installer(scriptPath: string, version = "latest"): string[] {
 }
 
 /** What the restarted jobs are called here. The periodic sync isn't one: it starts fresh each time. */
-const RUNNING: Record<string, string> = { clip: "clip listen", clipsync: "clip sync", agent: "the agent daemon", webhook: "webhook listen" };
+const RUNNING: Record<string, string> = { agent: "the agent daemon", webhook: "webhook listen" };
 
 /**
  * `0b update`: install the newest 0b from npm with the package manager that installed this one,
  * then restart 0bridge's background jobs that keep running (macOS, Linux and Windows), so they run
- * the new version. `--check` only says whether there's one.
+ * the new version, and clear what removed features left behind (removed.ts). `--check` only says
+ * whether there's one.
  */
 export async function updateCommand(ctx: Context, current: string, opts: { check?: boolean } = {}): Promise<void> {
   const latest = await fetch("https://registry.npmjs.org/0bridge/latest", { headers: { Accept: "application/json" } })
@@ -46,7 +47,10 @@ export async function updateCommand(ctx: Context, current: string, opts: { check
     .catch(() => null);
   if (!latest) fail("couldn't reach npm to look for a new version; check your connection and try again");
   if (current === "dev") fail(`this 0b runs from source (the newest release is ${latest}); update it with git pull`);
-  if (!isNewer(latest, current)) return console.log(`${c.green("✓")} 0b ${current} is the newest version`);
+  if (!isNewer(latest, current)) {
+    if (!opts.check) cleanUp(ctx);
+    return console.log(`${c.green("✓")} 0b ${current} is the newest version`);
+  }
   if (opts.check) return console.log(`0b ${latest} is out (this is ${current}). Run ${c.cyan("0b update")}.`);
 
   const cmd = installer(process.argv[1] ?? "", latest);
@@ -66,7 +70,12 @@ export async function updateCommand(ctx: Context, current: string, opts: { check
   // The jobs run the 0bridge script, which runs whatever 0b is installed: restart the ones that keep running, and move an older periodic job to today's schedule.
   upgradeBackground(ctx);
   const restarted = restartServices(ctx).map((n) => RUNNING[n] ?? n);
-  // The ⌃V receiver on a server isn't a service: stopping it is enough, the next ⌃V starts the new one.
-  if (stopReceiver(ctx)) restarted.push("the clipboard receiver");
   console.log(`${c.green("✓")} 0b ${now}${restarted.length ? c.dim(` · restarted ${restarted.join(" and ")}`) : ""}`);
+  cleanUp(ctx);
+}
+
+/** What features removed since left on this machine: their jobs, stand-ins and skill. */
+function cleanUp(ctx: Context): void {
+  const removed = cleanUpRemoved(ctx);
+  if (removed.length) console.log(`${c.green("✓")} removed what 0b no longer has: ${removed.join(", ")}`);
 }

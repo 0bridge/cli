@@ -88,7 +88,7 @@ export async function setup(ctx: Context, opts: SetupOptions): Promise<void> {
   const store = openSecretStore(ctx.storeDir);
   const plan = planApply(ctx, loadManifest(ctx)!, loadState(ctx), store);
   if (plan.missing.length) {
-    p.log.warn(`Not syncing yet: ${plan.missing.join(", ")} missing. Set them with ${c.cyan("0b secret set <name>")}, then run ${c.cyan("0b apply")}.`);
+    p.log.warn(`Not syncing yet: ${plan.missing.join(", ")} missing on this machine. Add the values to those servers' config in a tool here, then run ${c.cyan("0b import")} and ${c.cyan("0b apply")}.`);
   } else if (plan.changes.length) {
     const id = executePlan(ctx, plan);
     p.note(planSummary(ctx, plan).join("\n"), "Added to your tools");

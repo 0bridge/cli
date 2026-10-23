@@ -44,11 +44,11 @@ Every AI tool on this machine shares one MCP server, \`0bridge\`. Services conne
 
 ## Set up a machine or a repo
 
-When the user asks to set up this machine or a repo ("sync the backend dev environment here", "get this clone ready"), or when you start working in a repo and something 0bridge provides seems missing (a secret, a connection, a personal file):
+When the user asks to set up this machine or a repo ("sync the backend dev environment here", "get this clone ready"), or when you start working in a repo and something 0bridge provides seems missing (a connection, a skill):
 
 1. Run \`0b status\` in the repo. It's a checklist for this machine and this repo: each item is done (✓) or not (●) with the command that fixes it, marked **[agent]** (safe for you to run as is) or **[you]** (needs the user: a sign-in, a key, a choice).
-2. Run the [agent] fixes without asking: \`0b apply --yes\`, \`cd ~ && 0b files pull\` (their status line and other home files), \`0b files pull\`, \`0b project link\`, \`0b background on\`, and \`0b vault unlock\` (tell the user to approve it in their browser and check the code matches).
-3. Don't run the [you] ones, and don't copy .env files between machines: commands get secrets with \`0b exec -- <command>\`.
+2. Run the [agent] fixes without asking: \`0b apply --yes\`, \`0b project link\`, \`0b background on\`, and \`0b vault unlock\` (tell the user to approve it in their browser and check the code matches).
+3. Don't run the [you] ones.
 4. Tell the user in one short summary: what you did, what's set up (the project and the connections its agents see), and what's left for them, as the commands or dashboard steps \`0b status\` printed.
 
 ## Connect a service (remote MCP with sign-in)
@@ -67,7 +67,7 @@ When the user asks to set up this machine or a repo ("sync the backend dev envir
 ## Local MCP servers (run on this machine)
 
 - \`0b mcp add <name> -- <command> [args…]\` (or \`--url <url>\` for a local HTTP server), then \`0b apply --yes\` writes it into every tool.
-- Secrets: ask the user to run \`0b secret set <NAME> --global\` in their own terminal (it asks for the value; it's stored encrypted in their 0bridge vault). Reference it single-quoted so the shell leaves it alone: \`--env 'API_KEY=\${secret:<NAME>}'\`. Never put secret values in commands, files or chat. For API keys a project's commands need, see the \`0bridge-secrets\` skill.
+- Secrets: never put secret values in commands, files or chat. A key a local server needs is the user's to enter: they add it to the server's config in one tool themselves, then \`0b import\` moves it into this machine's keychain (the config keeps a \`\${secret:<NAME>}\` reference) and \`0b apply --yes\` shares the server.
 - Prefer \`0b connect\` whenever the server has a remote URL: the sign-in is kept once for every tool and machine.
 
 ## Skills and instructions
@@ -93,15 +93,6 @@ When the user asks to set up this machine or a repo ("sync the backend dev envir
 - The user's earlier sessions in Claude Code, Codex and other tools can be searched with the \`bridge__history_search\` tool (then \`bridge__history_get\` to read one), or \`0b history search "<words>"\` in a terminal. Use it when the user refers to something done or decided before ("like we did in the api repo last week").
 - It's empty until the user turns it on: \`0b history on\` (uploads this machine's sessions, secrets masked first). Suggest it; don't run it for them.
 
-## Personal files kept out of git
-
-- Files like \`AGENTS.local.md\`, \`CLAUDE.local.md\` (often a symlink to it) or \`.claude/settings.local.json\` can follow a repo to every machine: \`0b files add <file>\` once, then any clone gets them with \`0b files pull\` (sealed with the user's vault key).
-- In a repo where they're missing (\`0b files status\` says "not here"), run \`0b files pull\`. On a conflict, \`0b files\` leaves the other machine's copy next to the file: merge the two, then \`0b files push --force\`.
-
-## Screenshots and files from the user's computer
-
-- You can't see the user's clipboard, especially over SSH. When they mention a screenshot, image or file they copied for you, call \`bridge__clipboard\`: it returns what they sent (images as images). If nothing was sent, it asks their Mac (when \`0b clip listen\` is on there), and they allow it in a dialog. Otherwise ask them to run \`0b clip\` on their Mac (or paste it on the dashboard's Clipboard page), then call it again.
-
 ## Drive: files every AI app reads
 
 - The user's Drive, and their teams', holds files every AI app reaches through the \`bridge__drive_*\` tools, Claude and ChatGPT included. A folder with a README.md or AGENTS.md is a piece of work: list it first (\`bridge__drive_list\`), then follow its AGENTS.md and skills (\`bridge__skills\` with \`folder\`).
@@ -110,7 +101,7 @@ When the user asks to set up this machine or a repo ("sync the backend dev envir
 - Changed on both sides: sync keeps this machine's file and saves Drive's next to it as \`<name>.0bridge-<who>-v<n>.<ext>\`. Merge the two, then delete the copy.
 - A change to AGENTS.md, CLAUDE.md, \`.claude/\` or \`.agents/skills/\` through the \`bridge__drive_*\` tools, or by a team member who isn't an admin, waits as a proposal for an owner or admin in the dashboard. Tell the user; don't look for a way around it.
 - In a folder synced on an owner's or admin's machine, your edits to those files go up as theirs on the next sync, with no proposal: change them only when the user asked you to, and tell them what you changed.
-- 0bridge's server reads Drive files (that's how chat apps search them): secrets go in the vault, never in Drive.
+- 0bridge's server reads Drive files (that's how chat apps search them): secrets never go in Drive.
 
 ## APIs through 0bridge
 
@@ -123,7 +114,6 @@ When the user asks to set up this machine or a repo ("sync the backend dev envir
 
 - A repo can be a project with its own connections: in it, agents see those (and the global ones, unless it's strict). \`0b project\` shows what this repo gets; \`0b project link\` points this clone's AI tools at the project (the user decides which connections belong to it: \`0b project use <service> --label <account>\` limits one to this project; \`0b project hide <service> --label <account>\` keeps one out of it and leaves it everywhere else; or the dashboard).
 - A company repo should use the company's accounts only. If a tool you need isn't there, ask the user rather than using another account.
-- Secrets can be switched off (\`0b secret off <NAME>\`) instead of commenting lines out of .env, and carry notes (\`0b secret note <NAME> "…"\`) that \`0b secret list\` shows: read them to tell similar tokens apart.
 
 ## Look around
 
@@ -137,82 +127,15 @@ When the user asks to set up this machine or a repo ("sync the backend dev envir
 - Show the user the whole report and send it only after they say yes. \`0b feedback --kind problem "<report>"\` without \`--yes\` prints exactly what would be sent (with \`--include-logs\`, 0b's recent log lines too, masked) and sends nothing: show that, and once they agree run it again with \`--yes\`. Or use the \`bridge__feedback\` tool.
 `;
 
-/**
- * The `0bridge-secrets` skill: how agents use the user's vault. Values reach commands as
- * environment variables through `0b exec`, so an agent can run things without ever seeing a
- * value. It's guidance, not a lock: `.env` files keep working.
- */
-export const SECRETS_SKILL = `---
-name: 0bridge-secrets
-description: Use when a command needs API keys, tokens, passwords or other environment variables (a dev server, tests, migrations, deploys, scripts reading process.env), when the user mentions a .env file or asks to add, change or remove a secret, or when something fails because an env var is missing. The user's secrets live in their 0bridge vault and reach commands through \`0b exec\`, so you never need to read or handle a value.
----
-
-# Secrets through 0bridge
-
-The user keeps secrets in their 0bridge vault: encrypted on their machines, per repo (or global) and per environment (\`dev\`, \`prod\`). You use them by name; you never need their values.
-
-## Run commands with the secrets
-
-- \`0b exec -- <command>\` runs it with this repo's \`dev\` values (plus global ones) as environment variables. Examples: \`0b exec -- bun dev\`, \`0b exec -- npm test\`, \`0b exec -- npx prisma migrate dev\`.
-- In output you read, secret values show as \`***\`. That's expected; don't try to recover them.
-- \`0b exec --env prod --why "<one sentence>" -- <command>\` uses production values. It needs the user to approve in their browser, often with several sessions running, so always pass \`--why\`: what you're doing and why it needs production values (e.g. "Deploy the billing fix to production; wrangler needs the Cloudflare token"). The approval page shows it next to this session's title. Tell them before you run it, and never work around a refusal.
-- For a package.json script that always needs them, the user may prefer \`"dev": "0b exec -- next dev"\`. Suggest it; don't change scripts unasked.
-- The command also gets \`ZEROBRIDGE_ENV\` (\`dev\` or \`prod\`): a script can check it to know it runs under \`0b exec\`, and with which values.
-- Some keys may stay in the repo's \`.env\` on purpose (a local database address, a key made on this machine). How the repo combines the file with \`0b exec\` values is up to its own tooling; read the repo's instructions for it.
-
-## See what's there
-
-- \`0b secret list\` shows names per repo and environment (never values); variables are marked. Check it before saying a key is missing.
-
-## Secrets and variables
-
-- A **secret** (API keys, tokens, passwords, database URLs) is hidden and shows as \`***\` in output you read. A **variable** (PORT, NODE_ENV, NEXT_PUBLIC_*) is a plain setting and shows as is. Both reach commands the same way.
-- Plain settings you may set yourself, value on the command line: \`0b secret set PORT 3000 --variable\`.
-- \`0b secret mark <NAME> --secret\` (or \`--variable\`) switches one.
-
-## Adding secrets
-
-- **What goes in the vault is the user's choice.** Never store, replace, mark or remove a value on your own because a key "seems missing"; a name that's in \`.env\` but not in the vault is often left out on purpose.
-- A project with a \`.env\` file the user wants to move: first run \`0b secret import .env --dry-run\`. It stores nothing and lists each name (never values) with its guessed kind, whether it would replace one already in the vault, and whether it points at this machine (localhost: a local database or dev server, usually not for the vault). Show that list and ask which to move. Then run \`0b secret import .env --only NAME,NAME\` with the names they picked (without \`--only\` it moves every line). Don't delete \`.env\` unless they say so.
-- The user has values to paste (from a dashboard, a password manager, a teammate): ask them to run \`0b secret paste\` in **their own terminal**, or to paste them on the Secrets page of the 0bridge dashboard. Never ask them to paste values into chat.
-- One value: ask them to run \`0b secret set <NAME>\` in their own terminal (add \`--env prod\` or \`--global\` as needed). It asks for the value.
-- \`0b secret rm <NAME>\` removes one (confirm with the user first).
-- The user wants to see a value: \`0b secret show <NAME>\` in their own terminal, or the dashboard's Secrets page. It won't print a secret to you.
-
-## Don't
-
-- Don't print, echo, log or write out secret values, including via \`printenv\`, \`env\`, \`echo $KEY\` or debugging code.
-- Don't read \`.env\` files to find values; use \`0b exec\`.
-- \`.env\` still works and isn't forbidden. If the user wants to keep using it, that's their call.
-- A new machine that can't open the vault ("run \`0b vault unlock\`"): you may run \`0b vault unlock\`. It prints a code and waits while the user approves in their browser (passkey) or runs \`0b vault approve\` on another machine; tell them to check the code matches. \`--recovery-key\`, \`0b vault approve\` and \`0b vault recovery-key\` are for the user in their own terminal; don't run them.
-- \`0b exec\` or \`0b secret\` failing in a way that looks like a 0bridge bug: offer to report it with \`0b feedback\` (see the \`0bridge\` skill). Show the user the report first, and never put a value in it.
-`;
-
-/**
- * For the dashboard's Secrets page: what to paste into an agent so it moves a project's
- * secrets into the vault (the agent follows the `0bridge-secrets` skill from there).
- */
 /** A project's "Copy prompt": set up the repo it's run in (dashboard, project Overview). */
-export const PROJECT_PROMPT = `Set up this repo in 0bridge, so agents here get its own connections, secrets and personal files.
+export const PROJECT_PROMPT = `Set up this repo in 0bridge, so agents here get its own connections.
 
 1. Run \`0b project\` to see where it stands. If \`0b\` isn't installed or I'm not signed in, set up 0bridge first (\`npm install -g 0bridge@latest\`, then \`0b setup --yes\`).
 2. Run \`0b project link\`. It makes the repo a project and points this clone's Claude Code, Codex, Cursor and Gemini CLI at it. Tell me which connections agents here will see.
-3. If the repo has .env files (.env, .env.local, .env.development), run \`0b secret import <file> --dry-run\` for each. It stores nothing and never prints values. Show me the names it lists and ask which to move (keys that point at localhost usually stay in the file), then run \`0b secret import <file> --only <the names I picked>\`. Don't delete the files unless I say so.
-4. If AGENTS.local.md, CLAUDE.local.md or .claude/settings.local.json exist and aren't committed, run \`0b files add\` with them so my other machines get them.
-5. Tell me what changed and what I should do next (for example restart this tool so it picks up the project).`;
-
-export const SECRETS_PROMPT = `Move this project's secrets into my 0bridge vault, so you and other agents use them by name without reading them.
-
-1. Run \`0b secret list\` to see what's already there. If \`0b\` isn't installed or I'm not signed in, set up 0bridge first (\`npm install -g 0bridge@latest\`, then \`0b setup --yes\`).
-2. If the project has a .env (or .env.local, .env.development) file, run \`0b secret import <file> --dry-run\` for each. It stores nothing and lists each name (never values) as a secret (hidden) or a variable (like PORT), and flags names that would replace one in the vault or that point at this machine (localhost). Show me the list and ask which to move, then run \`0b secret import <file> --only <the names I picked>\`. Don't delete the files unless I say so.
-3. Find the env vars the code reads (process.env, import.meta.env, os.environ) that still aren't in the vault. List them for me and ask me to run \`0b secret set <NAME>\` in my own terminal for each secret. Set plain settings yourself with \`0b secret set <NAME> <value> --variable\`.
-4. From now on, run dev servers, tests and scripts that need them through \`0b exec -- <command>\`, and tell me which package.json scripts could use it.
-
-Never print, echo or log secret values, and don't read .env files to find them.`;
+3. Tell me what changed and what I should do next (for example restart this tool so it picks up the project).`;
 
 /** The prompts the dashboard's "Copy prompt" hands to an agent. Always English: agents follow it best, whatever the user speaks. */
 export const PROMPTS = {
   setup: agentPrompt,
-  secrets: SECRETS_PROMPT,
   project: PROJECT_PROMPT,
 };

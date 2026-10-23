@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadManifest, saveCloud, type Context } from "@0bridge/core";
 import { useAccount } from "../src/cloud.ts";
-import { accountAt, accountForRepo, saveLinks } from "../src/links.ts";
+import { accountAt, saveLinks } from "../src/links.ts";
 
 const fresh = (): Context => {
   const home = mkdtempSync(join(tmpdir(), "0b-cli-accounts-"));
@@ -30,9 +30,6 @@ describe("which account a command uses", () => {
     expect(accountAt(ctx, "/src/acme/tools/inner/x")).toBe(A.userId); // the innermost checkout wins
     expect(accountAt(ctx, "/src/acmex")).toBeNull();
     expect(accountAt(ctx, "/tmp")).toBeNull();
-    expect(accountForRepo(ctx, "github.com/acme/app")).toBe(B.userId);
-    expect(accountForRepo(ctx, "github.com/me/mine")).toBe(A.userId);
-    expect(accountForRepo(ctx, "github.com/other/x")).toBeNull();
   });
 
   test("a link to an account that signed out falls back to the default", () => {

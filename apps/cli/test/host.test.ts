@@ -217,7 +217,7 @@ describe("0b host against the gateway", () => {
     expect(seen.at(-1)!.body.params.arguments).toEqual({ cursor: "3", wait: 1 });
     const s = await run(["status", "T-012"]);
     expect(s.code).toBe(1);
-    expect(s.err).toContain("0b setup --agent-vm");
+    expect(s.err).toContain("0b login");
     const n = seen.length;
     const bad = await run(["answer", "x"]);
     expect(bad.code).toBe(2);

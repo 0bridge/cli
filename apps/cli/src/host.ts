@@ -7,8 +7,7 @@ import { cloudClient } from "./cloud.ts";
  * Dots VM, or a laptop), through the same bridge__host_* tools a chat app calls, on the gateway's
  * /mcp with this device's token: changes through bridge__execute_write, reads by name (sendHost). On the dev machine `0b agent supervisor ledger` writes
  * a request as a dev_request, a follow-up as a user_followup and an answer as a user_decision
- * into its work ledger. An agent computer's token (`0b setup --agent-vm`) reaches only such a
- * ledger machine; the gateway refuses one on OpenClaw. `--key` gives a send the caller's own
+ * into its work ledger; the gateway refuses one on OpenClaw. `--key` gives a send the caller's own
  * id, so running it again (a retry after a lost reply) records nothing new and prints the first
  * result; `0b host receipts` lists what this token sent and where each stands.
  *

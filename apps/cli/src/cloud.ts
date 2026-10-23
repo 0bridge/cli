@@ -7,7 +7,6 @@ import { dirname, join, resolve } from "node:path";
 import {
   getAdapters,
   BRIDGE_SKILL,
-  SECRETS_SKILL,
   CloudClient,
   CloudError,
   DEFAULT_SERVER,
@@ -45,31 +44,27 @@ import {
   type AppSetup,
   type CloudConnection,
   type Manifest,
+  type McpServer,
   type OAuthClient,
   type Context,
 } from "@0bridge/core";
 import { registryFirst, withRegistry } from "@0bridge/core/mcp-registry";
 import { qrPng, qrTerminal, qrTerminalWidth } from "@0bridge/core/qr";
-import { AGENT_VM_DEVICE_SCOPE } from "@0bridge/core/agent-vm";
 import { loginCode, pairingKeyPair } from "@0bridge/core/vault-crypto";
 import { OFF_FIX, OFF_NOTE, readinessOf, toolsText, type ReadinessInput } from "@0bridge/core/readiness";
 import { c, canOpenBrowser, p, planSummary, spinner, where } from "./ui.ts";
 import { loginInto } from "./profile.ts";
 import { unlinkAccount } from "./project.ts";
-import { attachWithSession } from "./agent-vm.ts";
 
 const b64url = (buf: ArrayBuffer | Uint8Array) =>
   Buffer.from(buf instanceof Uint8Array ? buf : new Uint8Array(buf)).toString("base64url");
 
 /**
- * The `0bridge` skill (add MCPs and services through `0b`) and `0bridge-secrets` (use the vault
- * through `0b exec`), for every tool's agent. Kept current on each sign-in.
+ * The `0bridge` skill (add MCPs and services through `0b`), for every tool's agent. Kept current on
+ * each sign-in. (`0bridge-secrets` went with the vault's values, D86: removed.ts deletes it.)
  */
 export function installBridgeSkill(ctx: Context, m: Manifest): void {
-  for (const [name, text] of [
-    ["0bridge", BRIDGE_SKILL],
-    ["0bridge-secrets", SECRETS_SKILL],
-  ] as const) {
+  for (const [name, text] of [["0bridge", BRIDGE_SKILL]] as const) {
     const file = join(paths(ctx).skills, name, "SKILL.md");
     if (readText(file) !== text) writeAtomic(file, text);
     m.skills[name] ??= {};
@@ -77,15 +72,12 @@ export function installBridgeSkill(ctx: Context, m: Manifest): void {
 }
 
 /**
- * After an update of 0b: bring the 0bridge skills up to date, in 0bridge's store and in each AI
- * tool that has them (the background sync runs this). Only those two skills are touched.
+ * After an update of 0b: bring the 0bridge skill up to date, in 0bridge's store and in each AI
+ * tool that has it (the background sync runs this). Only that skill is touched.
  */
 export function refreshBridgeSkills(ctx: Context): number {
   let changed = 0;
-  for (const [name, text] of [
-    ["0bridge", BRIDGE_SKILL],
-    ["0bridge-secrets", SECRETS_SKILL],
-  ] as const) {
+  for (const [name, text] of [["0bridge", BRIDGE_SKILL]] as const) {
     const files = [join(paths(ctx).skills, name, "SKILL.md"), ...Object.values(getAdapters(ctx)).flatMap((a) => (a.skillsDir && existsSync(join(a.skillsDir, name)) ? [join(a.skillsDir, name, "SKILL.md")] : []))];
     for (const file of files)
       if (existsSync(dirname(file)) && readText(file) !== text) {
@@ -212,8 +204,8 @@ export interface DeviceStart {
   vault?: boolean;
 }
 
-/** The machine as a sign-in hint names it on the dashboard ("muse-vm · Linux · agent VM"). */
-export type HintMachine = { name: string; os: string; arch: string; kind: "cli" | "agent-vm"; platform?: string };
+/** The machine as a sign-in hint names it on the dashboard ("laptop · macOS"). */
+export type HintMachine = { name: string; os: string; arch: string; kind: "cli" };
 
 /**
  * Device authorization grant (RFC 8628), like `gh auth login`: works on this machine, over SSH,
@@ -221,14 +213,13 @@ export type HintMachine = { name: string; os: string; arch: string; kind: "cli" 
  * dashboard (push approval, round 2): the server answers with the number the dashboard will ask
  * for, and the same whether or not that account exists.
  */
-export async function startDeviceSignIn(server: string, opts: { hint?: { email: string; machine: HintMachine }; agentVm?: boolean; vaultPub?: string } = {}): Promise<DeviceStart> {
+export async function startDeviceSignIn(server: string, opts: { hint?: { email: string; machine: HintMachine }; vaultPub?: string } = {}): Promise<DeviceStart> {
   server = server.replace(/\/+$/, "");
   const res = await fetch(`${server}/auth/device/code`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    // An agent's computer says so up front: the approval page shows it, and the session can only make its token.
     // `vault_pub`: hand the vault key over with this sign-in, encrypted to this key (T-039).
-    body: JSON.stringify({ client_id: CLI_CLIENT_ID, ...(opts.agentVm ? { scope: AGENT_VM_DEVICE_SCOPE } : {}), ...(opts.vaultPub ? { vault_pub: opts.vaultPub } : {}) }),
+    body: JSON.stringify({ client_id: CLI_CLIENT_ID, ...(opts.vaultPub ? { vault_pub: opts.vaultPub } : {}) }),
   });
   if (!res.ok) throw new Error(`could not start sign-in (${res.status})`);
   const dc = (await res.json()) as { device_code: string; user_code: string; verification_uri: string; verification_uri_complete: string; interval?: number; expires_in?: number };
@@ -348,13 +339,13 @@ export async function pollDeviceSignIn(server: string, s: DeviceStart, opts: { u
 }
 
 /** What this machine is called in a sign-in hint. */
-export function hintMachine(agentVm?: { name: string; platform?: string }): HintMachine {
-  return { name: (agentVm?.name ?? hostname()).slice(0, 64), os: process.platform, arch: process.arch, kind: agentVm ? "agent-vm" : "cli", ...(agentVm?.platform ? { platform: agentVm.platform } : {}) };
+export function hintMachine(): HintMachine {
+  return { name: hostname().slice(0, 64), os: process.platform, arch: process.arch, kind: "cli" };
 }
 
 /** The device flow from start to approval: a short-lived session token, and the sign-in it came from. */
-async function deviceSignIn(server: string, opts: { qr?: string; email?: string; agentVm?: { name: string; platform?: string }; vaultPub?: string } = {}): Promise<{ token: string; start: DeviceStart }> {
-  const s = await startDeviceSignIn(server, { ...(opts.email ? { hint: { email: opts.email, machine: hintMachine(opts.agentVm) } } : {}), agentVm: Boolean(opts.agentVm), ...(opts.vaultPub ? { vaultPub: opts.vaultPub } : {}) });
+async function deviceSignIn(server: string, opts: { qr?: string; email?: string; vaultPub?: string } = {}): Promise<{ token: string; start: DeviceStart }> {
+  const s = await startDeviceSignIn(server, { ...(opts.email ? { hint: { email: opts.email, machine: hintMachine() } } : {}), ...(opts.vaultPub ? { vaultPub: opts.vaultPub } : {}) });
   printSignInLink(s, { tty: Boolean(process.stdout.isTTY), ...(opts.qr ? { qr: opts.qr } : {}) });
   const token = await pollDeviceSignIn(server, s);
   // Without untilMs, polling only ends approved or with an error.
@@ -365,7 +356,7 @@ async function deviceSignIn(server: string, opts: { qr?: string; email?: string;
 export async function login(
   ctx: Context,
   server = process.env.ZEROBRIDGE_SERVER ?? DEFAULT_SERVER,
-  opts: { web?: boolean; embedded?: boolean; qr?: string; email?: string; agentVm?: { name: string; days: number; platform?: string } } = {},
+  opts: { web?: boolean; embedded?: boolean; qr?: string; email?: string } = {},
 ): Promise<void> {
   server = server.replace(/\/+$/, "");
   if (!opts.embedded) p.intro(c.bold(" 0bridge login "));
@@ -379,14 +370,12 @@ export async function login(
   // --email (or ZEROB_EMAIL) names the account to ask on its dashboard, besides the link.
   const email = opts.email ?? (process.env.ZEROB_EMAIL || undefined);
   // The vault key can come with the sign-in, encrypted to a key pair that lives only in this process (T-039).
-  // An agent's computer asks for it separately (agent-vm.ts), with its own warning on the approval.
-  const pair = opts.web || opts.agentVm ? null : await pairingKeyPair();
+  const pair = opts.web ? null : await pairingKeyPair();
   const signIn = opts.web ? null : await deviceSignIn(server, { ...opts, email, ...(pair ? { vaultPub: pair.publicKey } : {}) });
   const bootstrap = signIn ? signIn.token : await oauthSignIn(server);
   const spin = spinner();
   spin.start("Creating a token for this device");
-  // An AI agent's computer gets an expiring token labeled as one (agent-vm.ts); anything else a device token.
-  const { token } = opts.agentVm ? await attachWithSession(server, bootstrap, opts.agentVm) : await new CloudClient(server, bootstrap).createToken(`${hostname()} · 0b CLI`);
+  const { token } = await new CloudClient(server, bootstrap).createToken(`${hostname()} · 0b CLI`);
   if (!opts.web) {
     // Drop the web session the device flow created; the device token replaces it.
     await fetch(`${server}/auth/sign-out`, {
@@ -631,7 +620,7 @@ export async function connectCommand(
   }
   const direct = DIRECT_ONLY[service.toLowerCase()];
   // With an OAuth app of the user's own (--client-id), try the bridge anyway: the service may accept it.
-  if (direct && !urlArg && !opts.clientId) return connectDirect(ctx, service.toLowerCase(), url, direct);
+  if (direct && !urlArg && !opts.clientId) return connectDirect(ctx, service.toLowerCase(), url, direct, Boolean(opts.yes));
   const label = await askLabel(ctx, service, opts.label);
   const oauthClient = opts.clientId ? { clientId: opts.clientId, clientSecret: opts.clientSecret } : undefined;
   // A service that needs a registered app (Slack): the workspace's own, or 0bridge's.
@@ -643,7 +632,7 @@ export async function connectCommand(
     r = await connectService(ctx, service, label, url, opts.headers, (s) => console.log(s), oauthClient, hosted, opts.readOnly);
   } catch (e) {
     // Any other server that only accepts reviewed apps: the same way out.
-    if (/only accepts sign-in from approved apps/.test((e as Error).message)) return connectDirect(ctx, service.toLowerCase(), url, (e as Error).message);
+    if (/only accepts sign-in from approved apps/.test((e as Error).message)) return connectDirect(ctx, service.toLowerCase(), url, (e as Error).message, Boolean(opts.yes));
     throw e;
   }
   const conn = (await cloudClient(ctx).client.connections()).find((x) => x.id === r.id);
@@ -937,13 +926,24 @@ async function connectApiCommand(ctx: Context, service: string, opts: { label?: 
  * tool on this machine instead, through the local sync (files are backed up). Each tool then
  * signs in on its own, since the tools themselves are approved clients.
  */
-async function connectDirect(ctx: Context, name: string, url: string, why: string): Promise<void> {
-  console.log(`${c.yellow("●")} ${why}. Adding ${c.bold(name)} to each of your AI tools directly instead; each one signs in to it once.`);
+async function connectDirect(ctx: Context, name: string, url: string, why: string, yes: boolean): Promise<void> {
   const m = loadManifest(ctx) ?? emptyManifest();
-  m.mcpServers[name] = { transport: "http", url };
-  saveManifest(ctx, m);
+  const existing = m.mcpServers[name];
+  const change = directEntryChange(existing, url);
+  // A server of the same name the user set up themselves (another URL, a local command) is theirs:
+  // replacing it would quietly point their tools somewhere else.
+  if (change === "conflict" && !yes) {
+    const now = existing?.url ?? [existing?.command, ...(existing?.args ?? [])].filter(Boolean).join(" ");
+    throw new Error(`your tools already have an MCP server named ${name} (${now || existing?.transport}). Not replaced. To point it at ${url} instead: 0b connect ${name} --yes`);
+  }
+  console.log(`${c.yellow("●")} ${why}. Adding ${c.bold(name)} to each of your AI tools directly instead; each one signs in to it once.`);
+  if (change !== "same") {
+    if (change === "conflict") console.log(c.dim(`  Replacing your ${name} entry (${existing?.url ?? existing?.transport}) because of --yes.`));
+    m.mcpServers[name] = { transport: "http", url };
+    saveManifest(ctx, m);
+  }
   const plan = planApply(ctx, m, loadState(ctx), openSecretStore(ctx.storeDir));
-  if (plan.missing.length) throw new Error(`not synced: ${plan.missing.join(", ")} missing (0b secret set <name> --global), then 0b apply`);
+  if (plan.missing.length) throw new Error(`not synced: ${plan.missing.join(", ")} missing on this machine (add the values to those servers' config in a tool here, then 0b import and 0b apply)`);
   if (plan.changes.length) {
     const id = executePlan(ctx, plan);
     for (const line of planSummary(ctx, plan)) console.log(`  ${line}`);
@@ -953,6 +953,16 @@ async function connectDirect(ctx: Context, name: string, url: string, why: strin
   Claude Code  run ${c.cyan("/mcp")}, pick ${name}, Authenticate
   Codex        ${c.cyan(`codex mcp login ${name}`)}
   Cursor       Settings → MCP → ${name} → Needs login`);
+}
+
+/**
+ * What adding a direct (DIRECT_ONLY) server does to the manifest entry of that name: "add" when
+ * there's none, "same" when it's already this URL over HTTP (nothing to write), "conflict" when
+ * it's something else, which is only replaced with --yes.
+ */
+export function directEntryChange(existing: McpServer | undefined, url: string): "add" | "same" | "conflict" {
+  if (!existing) return "add";
+  return existing.transport === "http" && existing.url === url ? "same" : "conflict";
 }
 
 const same = (a: string, b: string) => a.toLowerCase().replace(/[^a-z0-9]+/g, "_") === b.toLowerCase().replace(/[^a-z0-9]+/g, "_");

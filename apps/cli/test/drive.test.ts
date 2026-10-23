@@ -253,7 +253,7 @@ describe("0b drive", () => {
 });
 
 describe("no timer syncs Drive folders", () => {
-  test("the background job syncs history, context and personal files, never a Drive folder: whoever works in one syncs it", () => {
+  test("the background job syncs history and context, never a Drive folder: whoever works in one syncs it", () => {
     const src = readFileSync(join(import.meta.dir, "../src/background.ts"), "utf8");
     expect(src).not.toContain("syncAllDriveFolders");
     expect(src).not.toContain("drive-sync");

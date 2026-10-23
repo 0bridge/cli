@@ -16,7 +16,6 @@ import { logEvent, logMeta, readTask } from "./log.ts";
 import { PERM_WAIT_MS, removeTaskFile, writeTaskFile } from "./perm-mcp.ts";
 import { AGENT_IDS, clampMode, denyRules, loadAgentConfig, profileEnv, repoFor, saveAgentConfig, supervisorInfo, withUseProfiles, type AgentConfig, type AgentId, type Mode, type RepoPolicy } from "./policy.ts";
 import { installService } from "../service.ts";
-import { vaultValues } from "../vault.ts";
 import { HostSupervisor, type SupervisorOptions } from "./supervisor.ts";
 import { connectLoop, type Conn } from "./ws.ts";
 import type { DaemonAgentId, EventData, EventFrame, EventKind, HelloFrame, HostOp, HubFrame, HubRequest, ReplyFrame, RunningSession, SendCheck, SessionsReply, TaskState } from "./protocol.ts";
@@ -79,7 +78,6 @@ export class Daemon {
   private outbox: EventFrame[] = [];
   private send: ((frame: object) => boolean) | null = null;
   private log: (line: string) => void;
-  private secrets: { at: number; values: string[] } | null = null;
   /** The host supervisor, while agent.json sets one up (key: its settings). */
   private host: { key: string; sup: HostSupervisor; kind: "openclaw" | "ledger" } | null = null;
   /** The supervisor key last seen (undefined: not looked at yet), so a change is told to the hub once. */
@@ -169,7 +167,7 @@ export class Daemon {
     this.host?.sup.stop();
     this.host = null;
     if (!key) return null;
-    const sup = new HostSupervisor(this.ctx, cfg.supervisor!, { ...this.supOpts, mask: (s) => redact(s, this.vaultValues()), log: this.log });
+    const sup = new HostSupervisor(this.ctx, cfg.supervisor!, { ...this.supOpts, mask: (s) => redact(s), log: this.log });
     if (this.send) sup.connected(this.send);
     this.host = { key, sup, kind: cfg.supervisor!.kind };
     return sup;
@@ -655,21 +653,9 @@ export class Daemon {
     for (const [id, t] of this.tasks) if (!["starting", "running", "waiting"].includes(t.state) && t.updatedAt < old) this.tasks.delete(id);
   }
 
-  /** The vault's values this machine can open (masked in every event, as in synced history), read again each minute. */
-  private vaultValues(): string[] {
-    if (this.secrets && Date.now() - this.secrets.at < 60_000) return this.secrets.values;
-    let values: string[] = [];
-    try {
-      values = vaultValues(this.ctx);
-    } catch {}
-    this.secrets = { at: Date.now(), values };
-    return values;
-  }
-
   private emit(task: Task, kind: EventKind, data: EventData): void {
     const clean: EventData = { ...data };
-    const values = this.vaultValues();
-    for (const k of ["text", "summary", "error"] as const) if (typeof clean[k] === "string") clean[k] = redact(clean[k]!, values).slice(0, MAX_TEXT);
+    for (const k of ["text", "summary", "error"] as const) if (typeof clean[k] === "string") clean[k] = redact(clean[k]!).slice(0, MAX_TEXT);
     if (kind === "error") {
       if (clean.error === task.lastError) return;
       task.lastError = clean.error;

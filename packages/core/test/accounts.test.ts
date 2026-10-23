@@ -81,7 +81,7 @@ describe("several accounts", () => {
     const ctx = fresh();
     saveCloud(ctx, A);
     saveCloud(ctx, B);
-    saveVaultCache(ctx, { keyId: "kA", items: [] } as never);
+    saveVaultCache(ctx, { keyId: "kA" });
     expect(loadVaultCache(ctx)?.keyId).toBe("kA");
     clearCloud(ctx, A.userId);
     const C = { ...A, userId: "userCCCC3", email: "c@example.com", login: "C" };

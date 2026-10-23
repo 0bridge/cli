@@ -228,7 +228,7 @@ describe("requestUnlock", () => {
     const log = console.log;
     console.log = (...a: unknown[]) => void logs.push(a.join(" "));
     try {
-      expect(await requestUnlock(ctx, { waitMs: 0, agentVm: true })).toBe("pending");
+      expect(await requestUnlock(ctx, { waitMs: 0 })).toBe("pending");
     } finally {
       console.log = log;
     }
@@ -236,7 +236,7 @@ describe("requestUnlock", () => {
     // The link first and alone after its label, then the code.
     expect(logs[0]).toBe(`Approve the vault key: ${base}/app/secrets/pair/p_1`);
     expect(logs[1]).toMatch(/^Code: [A-Z2-7]{4}-[A-Z2-7]{4}/);
-    expect(logs.join("\n")).toMatch(/AI agent's computer/);
+    expect(logs.join("\n")).toMatch(/passkey/);
     const file = join(ctx.storeDir, "vault-pending.json");
     expect(existsSync(file)).toBe(true);
     if (process.platform !== "win32") expect(statSync(file).mode & 0o777).toBe(0o600);

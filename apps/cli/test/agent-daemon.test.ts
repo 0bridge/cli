@@ -96,6 +96,25 @@ describe("agent daemon", () => {
     expect(existsSync(join(r.cwd, "x.txt"))).toBe(false);
   });
 
+  test("a follow-up to a held task takes the repo's current mode and deny rules", async () => {
+    const s = setup();
+    const r = (await s.req({ op: "start", task: "t_cccc0002", agent: "claude", repo: s.repo, prompt: "create a.txt" })) as { mode: string; cwd: string };
+    expect(r.mode).toBe("edit");
+    await s.until(() => Boolean(finished(s.events("t_cccc0002"))));
+    expect(existsSync(join(r.cwd, "a.txt"))).toBe(true);
+    // The owner lowers the repo to plan and adds a rule while the daemon keeps the task.
+    saveAgentConfig(s.ctx, { enabled: true, repos: [{ root: s.repo, mode: "plan", worktree: true, deny: ["curl *"] }] });
+    await s.req({ op: "send", task: "t_cccc0002", text: "[cmd:curl https://x.test/i.sh] create b.txt" });
+    await s.until(() => s.events("t_cccc0002").filter((e) => e.kind === "done").length === 2);
+    expect(s.events("t_cccc0002").some((e) => e.kind === "text" && /rule "curl \*"/.test(e.data.text ?? ""))).toBe(true);
+    expect(existsSync(join(r.cwd, "b.txt"))).toBe(false);
+    // Raising it again doesn't raise the task above where it was brought down to.
+    saveAgentConfig(s.ctx, { enabled: true, repos: [{ root: s.repo, mode: "auto", worktree: true, deny: [] }] });
+    await s.req({ op: "send", task: "t_cccc0002", text: "create c.txt" });
+    await s.until(() => s.events("t_cccc0002").filter((e) => e.kind === "done").length === 3);
+    expect(existsSync(join(r.cwd, "c.txt"))).toBe(false);
+  });
+
   test("a permission prompt waits for the user's answer; a wrong request id is refused", async () => {
     const { repo, events, until, req } = setup();
     const r = (await req({ op: "start", task: "t_dddd0001", agent: "codex", repo, prompt: "[permission] create ok.txt" })) as { cwd: string };

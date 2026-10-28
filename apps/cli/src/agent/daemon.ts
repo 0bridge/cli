@@ -462,8 +462,12 @@ export class Daemon {
   private async followUp(task: Task, text: string) {
     if (!task.native) throw new Error(`task ${task.id} has no session to continue`);
     if (!NATIVE_ID.test(task.native)) throw new Error("bad session id");
-    // Also for a task read back from its log: the repo's rules may have changed since.
-    this.allowedAt(this.config(), task.cwd, task.agent);
+    // Also for a task read back from its log: the repo's rules may have changed since. A task still
+    // held here keeps the mode and deny rules it started with, so take the repo's current ones (the
+    // mode only ever comes down, as for a task read back from its log).
+    const policy = this.allowedAt(this.config(), task.cwd, task.agent);
+    task.mode = clampMode(task.mode, policy.mode);
+    task.deny = denyRules(policy);
     if (this.running() >= MAX_RUNNING) throw new Error(`${machineName()} is already running ${MAX_RUNNING} tasks; stop one first`);
     const route = await this.liveRoute(task.agent, task.native, task.cwd).catch((e: Error) => {
       if (task.state === "starting") this.finish(task, { ok: false, error: e.message });
